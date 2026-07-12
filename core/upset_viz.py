@@ -1,0 +1,122 @@
+"""UpSet plot rendering for N-way compound membership sets."""
+
+from __future__ import annotations
+
+from typing import Collection
+
+import matplotlib
+
+# Prefer Agg for Streamlit workers / CI / pytest when no interactive backend is set.
+_backend = str(matplotlib.get_backend()).lower()
+if _backend in {"macosx", "tkagg", "qt5agg", "qtagg"} or "interactive" in _backend:
+    pass
+else:
+    try:
+        matplotlib.use("Agg", force=False)
+    except Exception:
+        pass
+
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+
+
+def _figure_size(n_categories: int, n_intersections: int) -> tuple[float, float]:
+    """Pick a readable figure size that still fits typical Streamlit widths."""
+    width = min(16.0, max(7.0, 1.1 * max(n_intersections, 1) + 3.5))
+    height = min(10.0, max(4.0, 0.55 * max(n_categories, 1) + 3.0))
+    return width, height
+
+
+def _element_size(n_categories: int, n_intersections: int) -> float:
+    if n_intersections >= 24 or n_categories >= 6:
+        return 28.0
+    if n_intersections >= 12 or n_categories >= 4:
+        return 32.0
+    return 36.0
+
+
+def render_upset(memberships: list[frozenset[str]]) -> Figure:
+    """
+    Build an UpSet figure from per-cluster label memberships.
+
+    ``memberships`` is the list produced by
+    :func:`core.compound_report.build_upset_memberships` (one frozenset per
+    cluster). Empty input yields an empty placeholder figure.
+    """
+    if not memberships:
+        fig = Figure(figsize=(7, 2.5))
+        ax = fig.add_subplot(111)
+        ax.axis("off")
+        ax.set_title("No compound clusters to plot")
+        fig.tight_layout()
+        return fig
+
+    # Lazy import so unit tests that never plot can skip the dependency path.
+    from upsetplot import from_memberships, plot as upset_plot
+
+    categories = membership_category_labels(memberships)
+    # Unique non-empty intersections drive horizontal crowding.
+    intersections = {frozenset(membership) for membership in memberships if membership}
+    n_categories = len(categories)
+    n_intersections = max(len(intersections), 1)
+    fig_width, fig_height = _figure_size(n_categories, n_intersections)
+    element_size = _element_size(n_categories, n_intersections)
+
+    series = from_memberships(
+        [list(membership) for membership in memberships],
+        data=None,
+    )
+    fig = Figure(figsize=(fig_width, fig_height))
+    with plt.rc_context(
+        {
+            "font.size": 9 if n_intersections < 16 else 8,
+            "axes.titlesize": 11,
+            "axes.labelsize": 9,
+        }
+    ):
+        axes_dict = upset_plot(
+            series,
+            subset_size="count",
+            show_counts=True,
+            element_size=element_size,
+            fig=fig,
+        )
+    fig = _figure_from_upset_axes(axes_dict)
+    fig.set_size_inches(fig_width, fig_height, forward=True)
+    # upsetplot's multi-axes layout is often incompatible with tight_layout.
+    fig.subplots_adjust(left=0.12, right=0.98, top=0.92, bottom=0.08)
+    return fig
+
+
+def _figure_from_upset_axes(axes_dict: object) -> Figure:
+    """Resolve the matplotlib Figure from upsetplot's axes return value."""
+    if isinstance(axes_dict, dict):
+        for value in axes_dict.values():
+            if hasattr(value, "figure"):
+                return value.figure
+            if isinstance(value, dict):
+                for nested in value.values():
+                    if hasattr(nested, "figure"):
+                        return nested.figure
+    if hasattr(axes_dict, "figure"):
+        return axes_dict.figure  # type: ignore[attr-defined]
+    # Fallback: current figure after plot()
+    return plt.gcf()
+
+
+def membership_category_labels(memberships: Collection[frozenset[str]]) -> list[str]:
+    """Sorted unique labels appearing in any membership (useful for legends)."""
+    labels: set[str] = set()
+    for membership in memberships:
+        labels.update(membership)
+    return sorted(labels)
+
+
+def estimate_upset_size(memberships: list[frozenset[str]]) -> tuple[float, float, float]:
+    """Return (width, height, element_size) for tests / diagnostics."""
+    categories = membership_category_labels(memberships)
+    intersections = {frozenset(membership) for membership in memberships if membership}
+    n_categories = max(len(categories), 1)
+    n_intersections = max(len(intersections), 1)
+    width, height = _figure_size(n_categories, n_intersections)
+    return width, height, _element_size(n_categories, n_intersections)

@@ -1,24 +1,131 @@
-"""Pre-pass benchmark comparison — Streamlit entrypoint."""
+"""Unified multi-model benchmark — single-screen Streamlit orchestrator."""
 
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 import pandas as pd
 import streamlit as st
 
+from core.compound_matching import diff_compounds_nway
+from core.compound_parsing import parse_compounds_json
+from core.compound_report import (
+    build_upset_memberships,
+    entries_to_dataframe,
+    identifier_type_counts,
+    nway_clusters_dataframe,
+    nway_label_counts_dataframe,
+    nway_pairwise_summary_dataframe,
+)
 from core.embeddings import MODEL_NAMES, compute_vs_reference_similarities, load_models, resolve_device
 from core.flagging import build_disagree_mask, collapse_flag_regions
-from core.models import PrepassRun, build_prepass_run
-from core.parsing import total_lines_from_markdown
+from core.line_arrays import build_line_arrays
+from core.m1_agreement import (
+    FIELD_FILTER_OPTIONS,
+    ClusterAgreementRow,
+    compute_m1_agreement,
+    filter_cluster_rows,
+)
+from core.m1_parsing import QUANTITY_FIELDS, parse_m1_json
+from core.m1_visuals import build_agreement_heatmap
+from core.models import PrepassRun
+from core.parsing import parse_prepass_json, total_lines_from_markdown, type_distribution
+from core.r1_parsing import parse_r1_json
+from core.reaction_matching import compare_reactions
+from core.reaction_parsing import parse_reactions_json
+from core.reaction_report import (
+    false_negatives_to_dataframe,
+    false_positives_to_dataframe,
+    matched_pairs_to_dataframe as reaction_matched_pairs_to_dataframe,
+    summary_to_dataframe as reaction_summary_to_dataframe,
+)
 from core.scoring import compute_multi_run_scores, resolve_reference_index
+from core.upset_viz import render_upset
 from core.visuals import build_timeline_figure, build_type_histogram
+import matplotlib.pyplot as plt
 
 DEFAULT_RUN_LABELS = ["Claude", "DeepSeek"]
+
+FILE_KINDS = ("prepass", "m1", "m2", "r1", "reactions")
+FILE_KIND_LABELS = {
+    "prepass": "Pre-pass JSON",
+    "m1": "M1 JSON",
+    "m2": "M2 JSON",
+    "r1": "R1 JSON",
+    "reactions": "Reactions JSON",
+}
+
+
+@dataclass
+class ModelUploads:
+    """One labeled model row from the upload matrix."""
+
+    label: str
+    files: dict[str, tuple[bytes, str]]  # kind -> (raw bytes, filename)
 
 
 def _file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _default_label(index: int) -> str:
+    if index < len(DEFAULT_RUN_LABELS):
+        return DEFAULT_RUN_LABELS[index]
+    return f"Run {index + 1}"
+
+
+def _default_reference_label(labels: list[str]) -> str:
+    if "Claude" in labels:
+        return "Claude"
+    return labels[0]
+
+
+def _format_rate(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.1%}"
+
+
+def _format_aliases(aliases: tuple[str, ...]) -> str:
+    return ", ".join(aliases) if aliases else "—"
+
+
+def _format_quantity(quantity: dict[str, float | None] | Mapping[str, float | None]) -> str:
+    parts = []
+    for field in QUANTITY_FIELDS:
+        value = quantity.get(field)
+        if value is not None:
+            parts.append(f"{field}={value}")
+    return ", ".join(parts) if parts else "—"
+
+
+def _show_upset(memberships: list[frozenset[str]], *, key: str) -> None:
+    """Render an UpSet figure full-width and close it to avoid Matplotlib leaks."""
+    fig = render_upset(memberships)
+    st.pyplot(fig, clear_figure=True, use_container_width=True)
+    plt.close(fig)
+    _ = key  # reserved for future keyed caching / uniqueness
+
+
+def _input_signature(
+    rows: list[ModelUploads],
+    baseline: str | None,
+    markdown_bytes: bytes | None,
+) -> tuple:
+    """Hashable signature of uploads/baseline/markdown (excludes UI-only widgets)."""
+    row_parts = []
+    for row in rows:
+        file_parts = tuple(
+            sorted(
+                (kind, _file_hash(raw), filename)
+                for kind, (raw, filename) in row.files.items()
+            )
+        )
+        row_parts.append((row.label, file_parts))
+    markdown_hash = _file_hash(markdown_bytes) if markdown_bytes is not None else None
+    return (tuple(row_parts), baseline, markdown_hash)
 
 
 @st.cache_resource(show_spinner="Loading embedding models (first run may download weights)...")
@@ -29,22 +136,37 @@ def get_models():
 
 
 @st.cache_data(show_spinner="Computing embeddings and scores...")
-def run_comparison(
+def run_line_comparison(
     run_hashes: tuple[str, ...],
     markdown_hash: str,
     run_payloads: tuple[tuple[str, str, bytes], ...],
     markdown_bytes: bytes,
-    markdown_label: str,
     reference_label: str,
+    *,
+    parser_kind: str,
 ):
-    """Heavy comparison pass — cached by input file hashes."""
-    _ = (run_hashes, markdown_hash)
+    """Heavy line-based comparison (pre-pass or R1) — cached by input hashes."""
+    _ = (run_hashes, markdown_hash, parser_kind)
 
     total_lines = total_lines_from_markdown(markdown_bytes)
-    runs: list[PrepassRun] = [
-        build_prepass_run(label, filename, raw, total_lines)
-        for label, filename, raw in run_payloads
-    ]
+    runs: list[PrepassRun] = []
+    for label, filename, raw in run_payloads:
+        source = f"{label} ({filename})"
+        if parser_kind == "r1":
+            sections = parse_r1_json(raw, source_label=source)
+        else:
+            sections = parse_prepass_json(raw, source_label=source)
+        arrays = build_line_arrays(sections, total_lines)
+        runs.append(
+            PrepassRun(
+                label=label,
+                filename=filename,
+                sections=sections,
+                arrays=arrays,
+                type_counts=type_distribution(sections),
+            )
+        )
+
     run_labels = [run.label for run in runs]
     reference_index = resolve_reference_index(run_labels, reference_label)
     reference_arrays = runs[reference_index].arrays
@@ -69,146 +191,64 @@ def run_comparison(
         "total_lines": total_lines,
         "device": device,
         "model_names": MODEL_NAMES,
-        "markdown_label": markdown_label,
         "reference_label": reference_label,
     }
 
 
-def _default_label(index: int) -> str:
-    if index < len(DEFAULT_RUN_LABELS):
-        return DEFAULT_RUN_LABELS[index]
-    return f"Run {index + 1}"
-
-
-def _collect_run_inputs(num_runs: int) -> list[tuple[str, bytes, str]]:
-    """Return (label, bytes, filename) for each uploaded run with a non-empty label."""
-    collected: list[tuple[str, bytes, str]] = []
-    for index in range(num_runs):
-        label = st.session_state.get(f"run_label_{index}", _default_label(index)).strip()
-        uploaded = st.session_state.get(f"run_file_{index}")
-        if uploaded is None:
-            continue
+def _collect_model_rows(num_models: int) -> list[ModelUploads]:
+    """Build labeled model rows from session state upload widgets."""
+    rows: list[ModelUploads] = []
+    for index in range(num_models):
+        label = st.session_state.get(f"model_label_{index}", _default_label(index)).strip()
+        files: dict[str, tuple[bytes, str]] = {}
+        for kind in FILE_KINDS:
+            uploaded = st.session_state.get(f"{kind}_file_{index}")
+            if uploaded is not None:
+                files[kind] = (uploaded.getvalue(), uploaded.name)
         if not label:
-            st.warning(f"Run {index + 1}: provide a label or the file will be skipped.")
+            if files:
+                st.warning(f"Model {index + 1}: provide a label or its files will be skipped.")
             continue
-        collected.append((label, uploaded.getvalue(), uploaded.name))
-    return collected
+        if files:
+            rows.append(ModelUploads(label=label, files=files))
+    return rows
 
 
-def _default_reference_label(labels: list[str]) -> str:
-    if "Claude" in labels:
-        return "Claude"
-    return labels[0]
+def _labels_with_file(rows: list[ModelUploads], kind: str) -> list[str]:
+    return [row.label for row in rows if kind in row.files]
 
 
-def main():
-    st.set_page_config(
-        page_title="Pre-pass Benchmark",
-        page_icon="📊",
-        layout="wide",
-    )
-    st.title("Pre-pass Benchmark Comparison")
-    st.caption(
-        "Compare multiple pre-pass JSON outputs against a reference (typically Claude). "
-        "Each benchmark model is scored on type agreement and label similarity vs the reference. "
-        "Use the sidebar to open **M2 Compound Diff** for molecule pass 2 comparison."
-    )
+def _payloads_for_kind(
+    rows: list[ModelUploads],
+    kind: str,
+) -> list[tuple[str, bytes, str]]:
+    """Return (label, raw, filename) for rows that have ``kind`` uploaded."""
+    return [
+        (row.label, row.files[kind][0], row.files[kind][1])
+        for row in rows
+        if kind in row.files
+    ]
 
-    st.subheader("Pre-pass outputs")
-    num_runs = st.number_input(
-        "Number of outputs to compare",
-        min_value=2,
-        max_value=8,
-        value=2,
-        step=1,
-        help="Upload at least two labeled pre-pass JSON files.",
-    )
 
-    for index in range(num_runs):
-        label_col, file_col = st.columns([1, 2])
-        with label_col:
-            st.text_input(
-                f"Label for output {index + 1}",
-                value=_default_label(index),
-                key=f"run_label_{index}",
-                placeholder="e.g. Claude, DeepSeek, GPT-4o",
-            )
-        with file_col:
-            st.file_uploader(
-                f"Pre-pass JSON for output {index + 1}",
-                type=["json"],
-                key=f"run_file_{index}",
-            )
-
-    st.subheader("Source document")
-    md_label_col, md_file_col = st.columns([1, 2])
-    with md_label_col:
-        markdown_label = st.text_input(
-            "Markdown label",
-            value="Source document",
-            key="markdown_label",
-        )
-    with md_file_col:
-        markdown_file = st.file_uploader(
-            "Enriched markdown",
-            type=["md", "txt", "markdown"],
-            key="markdown_file",
-        )
-
-    run_inputs = _collect_run_inputs(num_runs)
-    labels = [label for label, _, _ in run_inputs]
-    duplicate_labels = {label for label in labels if labels.count(label) > 1}
-    if duplicate_labels:
-        st.error(f"Each output needs a unique label. Duplicates: {', '.join(sorted(duplicate_labels))}")
-
-    reference_label = None
-    if len(labels) >= 2 and not duplicate_labels:
-        reference_label = st.selectbox(
-            "Reference output (baseline for comparison)",
-            options=labels,
-            index=labels.index(_default_reference_label(labels)),
-            help="All other outputs are compared against this reference, usually Claude.",
-        )
-
-    run_clicked = st.button(
-        "Run Comparison",
-        type="primary",
-        disabled=not (len(run_inputs) >= 2 and markdown_file and reference_label and not duplicate_labels),
-    )
-
-    if not run_clicked:
-        st.info(
-            "Upload at least two labeled pre-pass JSON files plus enriched markdown, "
-            "choose a reference output, then click **Run Comparison**."
-        )
-        return
-
-    markdown_bytes = markdown_file.getvalue()
-    run_payloads = tuple((label, filename, raw) for label, raw, filename in run_inputs)
-    run_hashes = tuple(_file_hash(raw) for _, _, raw in run_payloads)
-
-    try:
-        result = run_comparison(
-            run_hashes,
-            _file_hash(markdown_bytes),
-            run_payloads,
-            markdown_bytes,
-            markdown_label.strip() or "Source document",
-            reference_label,
-        )
-    except ValueError as e:
-        st.error(str(e))
-        return
-
+def _render_line_section_results(
+    result: dict[str, Any],
+    *,
+    section_title: str,
+    unit_name: str,
+    caption: str | None = None,
+) -> None:
+    """Shared timeline / histogram / flagging UI for pre-pass and R1."""
     scores = result["scores"]
     runs: list[PrepassRun] = result["runs"]
     run_label_list = [run.label for run in runs]
     reference = scores.reference_label
 
     st.success(
-        f"Comparison complete — {result['total_lines']} lines across {len(runs)} outputs "
+        f"{section_title} complete — {result['total_lines']} lines across {len(runs)} outputs "
         f"vs reference **{reference}**, device: **{result['device']}**"
     )
+    if caption:
+        st.caption(caption)
 
     score_rows = []
     for label in scores.benchmark_labels:
@@ -229,7 +269,7 @@ def main():
         for index, model_name in enumerate(result["model_names"], start=1):
             st.write(f"Model {index}: `{model_name}`")
 
-    with st.expander("Per-output section counts"):
+    with st.expander(f"Per-output {unit_name} counts"):
         section_rows = []
         for run in runs:
             section_rows.append(
@@ -237,7 +277,7 @@ def main():
                     "label": run.label,
                     "role": "reference" if run.label == reference else "benchmark",
                     "file": run.filename,
-                    "sections": len(run.sections),
+                    unit_name: len(run.sections),
                 }
             )
         st.dataframe(pd.DataFrame(section_rows), use_container_width=True, hide_index=True)
@@ -252,6 +292,7 @@ def main():
             max_value=1.0,
             value=0.75,
             step=0.05,
+            key=f"threshold_{unit_name}",
             help=f"Flag lines where a benchmark's label similarity vs {reference} falls below this value",
         )
 
@@ -302,6 +343,601 @@ def main():
         st.dataframe(pd.DataFrame(flag_rows), use_container_width=True, hide_index=True)
     else:
         st.success(f"No disagreements with {reference} found at the current threshold.")
+
+
+def render_prepass_section(
+    rows: list[ModelUploads],
+    baseline: str,
+    markdown_bytes: bytes | None,
+) -> None:
+    st.header("Pre-pass")
+    labels = _labels_with_file(rows, "prepass")
+    if len(labels) < 2:
+        st.info(f"Skipped — need ≥ 2 pre-pass uploads, got {len(labels)}.")
+        return
+    if markdown_bytes is None:
+        st.info("Skipped — enriched markdown is required for pre-pass total_lines.")
+        return
+    if baseline not in labels:
+        st.info(
+            f"Skipped — baseline **{baseline}** has no pre-pass file. "
+            f"Uploads: {', '.join(labels)}."
+        )
+        return
+
+    payloads = _payloads_for_kind(rows, "prepass")
+    run_payloads = tuple((label, filename, raw) for label, raw, filename in payloads)
+    try:
+        result = run_line_comparison(
+            tuple(_file_hash(raw) for _, raw, _ in payloads),
+            _file_hash(markdown_bytes),
+            run_payloads,
+            markdown_bytes,
+            baseline,
+            parser_kind="prepass",
+        )
+    except ValueError as error:
+        st.error(str(error))
+        return
+
+    _render_line_section_results(
+        result,
+        section_title="Pre-pass",
+        unit_name="sections",
+    )
+
+
+def render_r1_section(
+    rows: list[ModelUploads],
+    baseline: str,
+    markdown_bytes: bytes | None,
+) -> None:
+    st.header("R1 — Step boundaries")
+    labels = _labels_with_file(rows, "r1")
+    if len(labels) < 2:
+        st.info(f"Skipped — need ≥ 2 R1 uploads, got {len(labels)}.")
+        return
+    if markdown_bytes is None:
+        st.info("Skipped — enriched markdown is required for R1 total_lines.")
+        return
+    if baseline not in labels:
+        st.info(
+            f"Skipped — baseline **{baseline}** has no R1 file. "
+            f"Uploads: {', '.join(labels)}."
+        )
+        return
+
+    payloads = _payloads_for_kind(rows, "r1")
+    run_payloads = tuple((label, filename, raw) for label, raw, filename in payloads)
+    try:
+        result = run_line_comparison(
+            tuple(_file_hash(raw) for _, raw, _ in payloads),
+            _file_hash(markdown_bytes),
+            run_payloads,
+            markdown_bytes,
+            baseline,
+            parser_kind="r1",
+        )
+    except ValueError as error:
+        st.error(str(error))
+        return
+
+    _render_line_section_results(
+        result,
+        section_title="R1",
+        unit_name="steps",
+        caption=(
+            "Note: `section_type` on R1 steps is inherited from the parent pre-pass section, "
+            "not newly generated — type agreement will trend near 100% by construction. "
+            "The meaningful signal is step boundary geometry and step_label similarity."
+        ),
+    )
+
+
+def _render_m1_disagreement_browser(agreement) -> None:
+    """Filterable disagreement-first drill-down for matched M1 clusters."""
+    cluster_rows: list[ClusterAgreementRow] = agreement.cluster_rows
+    st.subheader("Field disagreement browser")
+    if not cluster_rows:
+        st.info("No shared clusters with the baseline.")
+        return
+
+    model_options = sorted({row.model_label for row in cluster_rows})
+    total_disagreements = sum(1 for row in cluster_rows if row.has_disagreement)
+    total_agreements = len(cluster_rows) - total_disagreements
+
+    filter_cols = st.columns([1.4, 1.4, 1.6, 1.0])
+    with filter_cols[0]:
+        selected_models = st.multiselect(
+            "Models",
+            options=model_options,
+            default=model_options,
+            key="m1_disagreement_models",
+        )
+    with filter_cols[1]:
+        field_filter = st.selectbox(
+            "Field filter",
+            options=list(FIELD_FILTER_OPTIONS),
+            index=0,
+            key="m1_disagreement_field",
+        )
+    with filter_cols[2]:
+        identifier_query = st.text_input(
+            "Identifier search",
+            value="",
+            key="m1_disagreement_query",
+            placeholder="Search baseline or model identifier",
+        )
+    with filter_cols[3]:
+        disagreements_only = st.checkbox(
+            "Disagreements only",
+            value=True,
+            key="m1_disagreement_only",
+        )
+
+    filtered = filter_cluster_rows(
+        cluster_rows,
+        model_labels=selected_models,
+        field_filter=field_filter,
+        identifier_query=identifier_query,
+        disagreements_only=disagreements_only,
+    )
+    hidden = total_agreements if disagreements_only else 0
+    st.caption(
+        f"Showing {len(filtered)} row(s)"
+        + (f"; {hidden} fully agreeing pairs hidden." if disagreements_only else ".")
+        + f" Total matched pairs: {len(cluster_rows)} "
+        f"({total_disagreements} with ≥1 disagreement)."
+    )
+
+    if not filtered:
+        st.success("No rows match the current filters.")
+        return
+
+    table_rows = []
+    for row in filtered:
+        table_rows.append(
+            {
+                "model": row.model_label,
+                "baseline_id": row.baseline_identifier,
+                "model_id": row.model_identifier,
+                "failed_fields": ", ".join(row.failed_fields) if row.failed_fields else "—",
+                "alias_jaccard": round(row.alias_jaccard, 3),
+            }
+        )
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("**Pair details**")
+    for index, row in enumerate(filtered):
+        title = (
+            f"{row.model_label}: {row.baseline_identifier} ↔ {row.model_identifier}"
+            + (f" [{', '.join(row.failed_fields)}]" if row.failed_fields else " [agree]")
+        )
+        with st.expander(title, expanded=False):
+            detail = pd.DataFrame(
+                [
+                    {
+                        "field": "identifier",
+                        "baseline": row.baseline_identifier,
+                        "model": row.model_identifier,
+                        "agree": row.baseline_identifier == row.model_identifier,
+                    },
+                    {
+                        "field": "identifier_type",
+                        "baseline": row.baseline_identifier_type,
+                        "model": row.model_identifier_type,
+                        "agree": row.identifier_type_agree,
+                    },
+                    {
+                        "field": "role",
+                        "baseline": row.baseline_role or "—",
+                        "model": row.model_role or "—",
+                        "agree": row.role_agree,
+                    },
+                    {
+                        "field": "is_section_product",
+                        "baseline": row.baseline_is_section_product,
+                        "model": row.model_is_section_product,
+                        "agree": row.is_section_product_agree,
+                    },
+                    {
+                        "field": "aliases",
+                        "baseline": _format_aliases(row.baseline_aliases),
+                        "model": _format_aliases(row.model_aliases),
+                        "agree": "aliases" not in row.failed_fields,
+                    },
+                    {
+                        "field": "alias_jaccard",
+                        "baseline": round(row.alias_jaccard, 3),
+                        "model": round(row.alias_jaccard, 3),
+                        "agree": "aliases" not in row.failed_fields,
+                    },
+                    {
+                        "field": "quantity",
+                        "baseline": _format_quantity(dict(row.baseline_quantity)),
+                        "model": _format_quantity(dict(row.model_quantity)),
+                        "agree": all(row.quantity_field_agree.values()),
+                    },
+                ]
+            )
+            st.dataframe(detail, use_container_width=True, hide_index=True)
+            qty_rows = []
+            for field in QUANTITY_FIELDS:
+                qty_rows.append(
+                    {
+                        "quantity_field": field,
+                        "baseline": row.baseline_quantity.get(field),
+                        "model": row.model_quantity.get(field),
+                        "presence_agree": row.quantity_field_agree.get(field, True),
+                    }
+                )
+            st.caption("Quantity presence agreement (null vs populated)")
+            st.dataframe(pd.DataFrame(qty_rows), use_container_width=True, hide_index=True)
+            _ = index
+
+
+def render_m1_section(rows: list[ModelUploads], baseline: str) -> None:
+    st.header("M1 — Molecule pass 1")
+    labels = _labels_with_file(rows, "m1")
+    if len(labels) < 2:
+        st.info(f"Skipped — need ≥ 2 M1 uploads, got {len(labels)}.")
+        return
+    if baseline not in labels:
+        st.info(
+            f"Skipped — baseline **{baseline}** has no M1 file. "
+            f"Uploads: {', '.join(labels)}."
+        )
+        return
+
+    try:
+        entries_by_label = {}
+        for label, raw, filename in _payloads_for_kind(rows, "m1"):
+            entries_by_label[label] = parse_m1_json(
+                raw, source_label=f"{label} ({filename})"
+            )
+        agreement = compute_m1_agreement(entries_by_label, baseline)
+    except (ValueError, KeyError) as error:
+        st.error(str(error))
+        return
+
+    nway = agreement.nway
+    st.success(
+        f"M1 comparison complete — {len(nway.labels)} models, "
+        f"{len(nway.clusters)} compound clusters vs baseline **{baseline}**."
+    )
+    st.caption(
+        "`section_label` is usually deterministic from the document structure — "
+        "focus on identifier_type, role, aliases, and quantity field agreement."
+    )
+
+    summary_rows = []
+    for summary in agreement.summaries.values():
+        summary_rows.append(
+            {
+                "model": summary.label,
+                "common": summary.common,
+                "baseline_only": summary.baseline_only,
+                "model_only": summary.model_only,
+                "recall": _format_rate(summary.recall),
+                "precision": _format_rate(summary.precision),
+                "identifier_type": _format_rate(summary.identifier_type.rate),
+                "role": _format_rate(summary.role.rate),
+                "is_section_product": _format_rate(summary.is_section_product.rate),
+                "alias_jaccard": (
+                    "—"
+                    if summary.alias_jaccard_mean is None
+                    else round(summary.alias_jaccard_mean, 3)
+                ),
+                "quantity_presence": _format_rate(summary.quantity.overall_rate),
+            }
+        )
+    st.subheader(f"Agreement vs {baseline}")
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    st.subheader("Agreement heatmap")
+    st.plotly_chart(
+        build_agreement_heatmap(
+            agreement.summaries,
+            title=f"Field agreement vs {baseline}",
+        ),
+        use_container_width=True,
+    )
+
+    st.subheader("Label counts")
+    st.dataframe(nway_label_counts_dataframe(nway), use_container_width=True, hide_index=True)
+
+    memberships = build_upset_memberships(nway)
+    st.subheader("UpSet — compound overlap")
+    _show_upset(memberships, key="m1_upset")
+
+    st.subheader("Multi-model clusters")
+    common_df = nway_clusters_dataframe(nway, min_labels=2)
+    if common_df.empty:
+        st.warning("No multi-model clusters.")
+    else:
+        st.dataframe(common_df, use_container_width=True, hide_index=True)
+
+    _render_m1_disagreement_browser(agreement)
+
+
+def render_m2_section(rows: list[ModelUploads], baseline: str) -> None:
+    st.header("M2 — Molecule pass 2")
+    labels = _labels_with_file(rows, "m2")
+    if len(labels) < 2:
+        st.info(f"Skipped — need ≥ 2 M2 uploads, got {len(labels)}.")
+        return
+    if baseline not in labels:
+        st.info(
+            f"Skipped — baseline **{baseline}** has no M2 file. "
+            f"Uploads: {', '.join(labels)}."
+        )
+        return
+
+    try:
+        entries_by_label = {}
+        for label, raw, filename in _payloads_for_kind(rows, "m2"):
+            entries_by_label[label] = parse_compounds_json(
+                raw, source_label=f"{label} ({filename})"
+            )
+        nway = diff_compounds_nway(entries_by_label)
+    except (ValueError, KeyError) as error:
+        st.error(str(error))
+        return
+
+    st.success(
+        f"M2 comparison complete — {len(nway.labels)} models, "
+        f"{len(nway.clusters)} compound clusters vs baseline **{baseline}**."
+    )
+    st.caption(
+        "Compounds match when any normalized identifier or alias overlaps. "
+        "No PubChem, RDKit, or embeddings."
+    )
+
+    st.subheader(f"Pairwise vs {baseline}")
+    pairwise_df = nway_pairwise_summary_dataframe(nway, baseline)
+    display_df = pairwise_df.copy()
+    if not display_df.empty:
+        display_df["recall_vs_baseline"] = display_df["recall_vs_baseline"].map(_format_rate)
+        display_df["precision_vs_baseline"] = display_df["precision_vs_baseline"].map(
+            _format_rate
+        )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Label counts")
+    st.dataframe(nway_label_counts_dataframe(nway), use_container_width=True, hide_index=True)
+
+    memberships = build_upset_memberships(nway)
+    st.subheader("UpSet — compound overlap")
+    _show_upset(memberships, key="m2_upset")
+
+    st.subheader("Multi-model clusters")
+    common_df = nway_clusters_dataframe(nway, min_labels=2)
+    if common_df.empty:
+        st.warning("No multi-model clusters.")
+    else:
+        st.dataframe(common_df, use_container_width=True, hide_index=True)
+
+    only_cols = st.columns(min(len(labels), 3))
+    for index, label in enumerate(labels):
+        only_entries = nway.only_entries(label)
+        with only_cols[index % len(only_cols)]:
+            st.subheader(f"{label} only ({len(only_entries)})")
+            if only_entries:
+                st.dataframe(
+                    entries_to_dataframe(only_entries),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                type_counts = identifier_type_counts(only_entries)
+                st.caption(
+                    "By identifier_type: "
+                    + ", ".join(f"{key}={value}" for key, value in sorted(type_counts.items()))
+                )
+            else:
+                st.success(f"No {label}-only compounds.")
+
+
+def render_reactions_section(rows: list[ModelUploads], baseline: str) -> None:
+    st.header("Reactions")
+    labels = _labels_with_file(rows, "reactions")
+    if baseline not in labels or len(labels) < 2:
+        got = len(labels)
+        st.info(
+            f"Skipped — need baseline + ≥ 1 other reactions upload "
+            f"(baseline present: {baseline in labels}, total uploads: {got})."
+        )
+        return
+
+    try:
+        reactions_by_label = {}
+        for label, raw, filename in _payloads_for_kind(rows, "reactions"):
+            reactions_by_label[label] = parse_reactions_json(
+                raw, source_label=f"{label} ({filename})"
+            )
+    except ValueError as error:
+        st.error(str(error))
+        return
+
+    baseline_reactions = reactions_by_label[baseline]
+    candidates = [label for label in labels if label != baseline]
+    st.success(
+        f"Reactions comparison — baseline **{baseline}** "
+        f"({len(baseline_reactions)} records) vs {len(candidates)} model(s)."
+    )
+    st.caption(
+        "Pairwise vs baseline (non_synthetic filtered). "
+        "Axes: name, SMILES, reactants, procedure cosine, yield, conditions."
+    )
+
+    for candidate in candidates:
+        st.subheader(f"{candidate} vs {baseline}")
+        try:
+            report = compare_reactions(
+                baseline_reactions,
+                reactions_by_label[candidate],
+                baseline_label=baseline,
+                candidate_label=candidate,
+            )
+        except Exception as error:
+            st.error(f"{candidate}: {error}")
+            continue
+
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("Precision", _format_rate(report.precision))
+        metric_cols[1].metric("Recall", _format_rate(report.recall))
+        metric_cols[2].metric("F1", _format_rate(report.f1))
+        metric_cols[3].metric("TP", report.true_positives)
+        metric_cols[4].metric("FP / FN", f"{report.false_positives} / {report.false_negatives}")
+
+        st.dataframe(
+            reaction_summary_to_dataframe(report),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        matched_df = reaction_matched_pairs_to_dataframe(report)
+        with st.expander(f"Matched pairs ({len(matched_df)})"):
+            if matched_df.empty:
+                st.warning("No content matches above threshold.")
+            else:
+                st.dataframe(matched_df, use_container_width=True, hide_index=True)
+
+        fp_df = false_positives_to_dataframe(report)
+        fn_df = false_negatives_to_dataframe(report)
+        fp_col, fn_col = st.columns(2)
+        with fp_col:
+            st.markdown(f"**False positives ({len(fp_df)})** — {candidate} only")
+            if fp_df.empty:
+                st.success("None")
+            else:
+                st.dataframe(fp_df, use_container_width=True, hide_index=True)
+        with fn_col:
+            st.markdown(f"**False negatives ({len(fn_df)})** — {baseline} only")
+            if fn_df.empty:
+                st.success("None")
+            else:
+                st.dataframe(fn_df, use_container_width=True, hide_index=True)
+
+
+def main():
+    st.set_page_config(
+        page_title="Multi-model Benchmark",
+        page_icon="📊",
+        layout="wide",
+    )
+    st.title("Multi-model Benchmark")
+    st.caption(
+        "Upload labeled model runs (optional file slots per kind), pick a shared baseline, "
+        "and run all available benchmarks. Each section skips independently when it lacks "
+        "enough uploads."
+    )
+
+    st.subheader("Model uploads")
+    num_models = st.number_input(
+        "Number of models",
+        min_value=2,
+        max_value=8,
+        value=2,
+        step=1,
+        help="Each row is one model. Fill only the file slots you want to compare.",
+    )
+
+    for index in range(num_models):
+        st.markdown(f"**Model {index + 1}**")
+        label_col, *file_cols = st.columns([1.2, 1, 1, 1, 1, 1])
+        with label_col:
+            st.text_input(
+                "Label",
+                value=_default_label(index),
+                key=f"model_label_{index}",
+                placeholder="e.g. Claude, DeepSeek",
+            )
+        for kind, col in zip(FILE_KINDS, file_cols):
+            with col:
+                st.file_uploader(
+                    FILE_KIND_LABELS[kind],
+                    type=["json"],
+                    key=f"{kind}_file_{index}",
+                )
+
+    st.subheader("Shared inputs")
+    md_label_col, md_file_col = st.columns([1, 2])
+    with md_label_col:
+        st.text_input(
+            "Markdown label",
+            value="Source document",
+            key="markdown_label",
+        )
+    with md_file_col:
+        markdown_file = st.file_uploader(
+            "Enriched markdown (required for pre-pass + R1)",
+            type=["md", "txt", "markdown"],
+            key="markdown_file",
+        )
+
+    rows = _collect_model_rows(num_models)
+    all_labels = [row.label for row in rows]
+    duplicate_labels = {label for label in all_labels if all_labels.count(label) > 1}
+    if duplicate_labels:
+        st.error(
+            f"Each model needs a unique label. Duplicates: {', '.join(sorted(duplicate_labels))}"
+        )
+
+    baseline: str | None = None
+    if all_labels and not duplicate_labels:
+        baseline = st.selectbox(
+            "Baseline / reference model",
+            options=all_labels,
+            index=all_labels.index(_default_reference_label(all_labels)),
+            help="Used by every benchmark section that has this label among its uploads.",
+        )
+
+    can_run = bool(rows) and baseline is not None and not duplicate_labels
+    run_clicked = st.button("Run Benchmarks", type="primary", disabled=not can_run)
+
+    markdown_bytes = markdown_file.getvalue() if markdown_file else None
+    signature = _input_signature(rows, baseline, markdown_bytes) if can_run else None
+
+    if "benchmark_active" not in st.session_state:
+        st.session_state.benchmark_active = False
+    if "benchmark_signature" not in st.session_state:
+        st.session_state.benchmark_signature = None
+
+    if run_clicked and can_run:
+        st.session_state.benchmark_active = True
+        st.session_state.benchmark_signature = signature
+
+    if (
+        st.session_state.benchmark_active
+        and st.session_state.benchmark_signature is not None
+        and signature is not None
+        and signature != st.session_state.benchmark_signature
+    ):
+        st.session_state.benchmark_active = False
+        st.warning(
+            "Uploads, labels, baseline, or markdown changed since the last run. "
+            "Click **Run Benchmarks** again."
+        )
+
+    if not st.session_state.benchmark_active:
+        st.info(
+            "Upload at least one file per model you want to compare, choose a baseline, "
+            "then click **Run Benchmarks**. Sections with fewer than two relevant files "
+            "are skipped automatically. Threshold sliders keep results visible after a run."
+        )
+        return
+
+    assert baseline is not None
+
+    render_prepass_section(rows, baseline, markdown_bytes)
+    st.divider()
+    render_m1_section(rows, baseline)
+    st.divider()
+    render_m2_section(rows, baseline)
+    st.divider()
+    render_r1_section(rows, baseline, markdown_bytes)
+    st.divider()
+    render_reactions_section(rows, baseline)
 
 
 if __name__ == "__main__":

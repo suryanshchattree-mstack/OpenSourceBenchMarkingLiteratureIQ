@@ -1,12 +1,13 @@
-# Pre-pass Benchmark Streamlit App
+# Multi-model Benchmark Streamlit App
 
-Standalone tool to compare two pre-pass JSON outputs (e.g. Claude baseline vs. an open-source LLM) line-by-line, with visual timeline, type-distribution histogram, embedding-based label similarity, and disagreement flagging.
+Single-screen tool to compare N labeled model runs across five optional output kinds (pre-pass, M1, M2, R1 step boundaries, reactions). Upload a matrix of files, pick one shared baseline, click **Run Benchmarks** — each section runs independently and skips with a notice when it lacks enough uploads.
 
 ## Requirements
 
 - Python 3.10+
 - macOS Apple Silicon (MPS) recommended — falls back to CPU if MPS unavailable
-- ~4 GB free RAM for loading three embedding models simultaneously
+- ~4 GB free RAM for loading three embedding models (used by pre-pass and R1)
+- `rdkit` (reactions SMILES axis) and `upsetplot` (M1/M2 overlap plots)
 
 ## Setup
 
@@ -19,7 +20,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-First run will download three Hugging Face models (~3 GB total, cached locally afterward):
+First pre-pass/R1 run downloads three Hugging Face models (~3 GB total, cached locally afterward):
 
 - `BAAI/bge-large-en-v1.5`
 - `intfloat/e5-large-v2`
@@ -31,110 +32,68 @@ First run will download three Hugging Face models (~3 GB total, cached locally a
 streamlit run app.py
 ```
 
-Opens at http://localhost:8501. Use the **sidebar** to switch between:
+Opens at http://localhost:8501 — one page, no sidebar multi-page nav.
 
-| Page | Purpose |
+### Upload matrix
+
+| Slot | Used by |
 |------|---------|
-| **app** (home) | Pre-pass section discovery comparison |
-| **M2 Compound Diff** | Deterministic molecule pass 2 compound set diff |
+| Pre-pass JSON | Pre-pass section timeline / scores |
+| M1 JSON | Molecule pass 1 N-way match + field agreement |
+| M2 JSON | Molecule pass 2 N-way match + UpSet |
+| R1 JSON | Step-boundary comparison (same visuals as pre-pass) |
+| Reactions JSON | Pairwise reaction panels vs baseline |
+| Enriched markdown | Shared `total_lines` for pre-pass + R1 |
 
-### Pre-pass page
+Fill only the slots you need. A section needs ≥ 2 uploads of that kind (reactions: baseline + ≥ 1 other). Missing kinds are skipped; the rest still run.
 
-Upload three files via the UI:
+### Pre-pass / R1 JSON
 
-| File | Description |
-|------|-------------|
-| Baseline pre-pass JSON | Claude output, pipeline `section-wise-v1` |
-| Benchmark pre-pass JSON | Open-source model output, e.g. `section-wise-v1-deepseek-flash` |
-| Enriched markdown | Source document; used to derive total line count |
+Pre-pass: top-level array of groups with `sections[]`. R1: flat or double-encoded step lists mapped onto the same `Section` geometry (`start_line` / `end_line` are document-global). R1 `section_type` is inherited from pre-pass, so type agreement is less meaningful than boundary geometry.
 
-### Pre-pass JSON format
+### M1 / M2
 
-Top-level array of groups, each with a `sections` array:
+Deterministic identifier/alias union-find across N models, UpSet overlap plot, and pairwise recall/precision vs baseline. M1 adds field-agreement metrics (identifier_type, role, aliases, quantity presence).
 
-```json
-[
-  {
-    "group_index": 0,
-    "section_type": "experimental_example",
-    "group_token_estimate": 1600,
-    "sections": [
-      {
-        "section_index": 0,
-        "section_label": "Example 1",
-        "section_type": "experimental_example",
-        "start_line": 1,
-        "end_line": 120,
-        "estimated_tokens": 1600
-      }
-    ]
-  }
-]
-```
+### Reactions
 
-## Outputs
+One pairwise panel per non-baseline model (name / SMILES / reactants / procedure cosine / yield / conditions). `non_synthetic` records are filtered before scoring.
 
-### Five scores
-
-1. **Type agreement** — fraction of lines where both models assign the same `section_type`
-2. **Model 1 similarity** — mean per-line cosine similarity (`BAAI/bge-large-en-v1.5`)
-3. **Model 2 similarity** — mean per-line cosine similarity (`intfloat/e5-large-v2`)
-4. **Model 3 similarity** — mean per-line cosine similarity (`all-mpnet-base-v2`)
-5. **Cumulative similarity** — mean of the per-line average across all three models
-
-### Visuals
-
-- **Timeline** — two colored bars (baseline + benchmark) segmented by `section_type`, plus a disagreement overlay row
-- **Histogram** — side-by-side section count per `section_type`
-
-### Flagging
-
-A line is flagged when:
-
-- `section_type` differs between baseline and benchmark, **OR**
-- cumulative label similarity (average of 3 models) is below the threshold slider (default 0.75)
-
-Flagged regions are collapsed into contiguous ranges and shown in a table. No resolution/verdict workflow — highlight only.
-
-### M2 Compound Diff page
-
-Upload two M2 (molecule pass 2) JSON files — baseline (Claude) and benchmark (e.g. DeepSeek). Each file should be a flat JSON array of compound objects concatenated across all sections for one patent.
-
-Headless CLI equivalent:
+## Headless CLIs (still available)
 
 ```bash
+# Pre-pass
+python compare_cli.py ...
+
+# M2 2-way
 python compound_compare_cli.py \
   --claude Claude:path/to/claude-m2.json \
   --benchmark DeepSeek:path/to/deepseek-m2.json
 ```
 
-Outputs: summary counts (`common`, baseline-only, benchmark-only), matched pairs table, unmatched tables with `identifier_type` breakdown, and a downloadable JSON report. No embeddings or network calls.
-
 ## Project structure
 
 ```
 prepass-benchmark/
-├── app.py                      # Pre-pass Streamlit home page
+├── app.py                      # Unified Streamlit screen
 ├── compound_compare_cli.py     # M2 diff CLI
 ├── compare_cli.py              # Pre-pass CLI
-├── pages/
-│   └── 2_M2_Compound_Diff.py   # M2 diff Streamlit page
 ├── requirements.txt
 ├── README.md
 └── core/
-    ├── parsing.py              # Pre-pass JSON + markdown parsing
+    ├── parsing.py              # Pre-pass JSON + markdown
+    ├── r1_parsing.py           # R1 → Section adapter
     ├── line_arrays.py          # per-line type/label painting
     ├── embeddings.py           # 3 models, MPS, cosine similarity
-    ├── scoring.py              # 5 summary scores
-    ├── flagging.py             # disagreement regions
-    ├── visuals.py              # Plotly charts
-    ├── compound_parsing.py     # M2 JSON parsing
-    ├── compound_matching.py    # deterministic compound diff
-    └── compound_report.py      # shared CLI/UI report formatting
+    ├── scoring.py / flagging.py / visuals.py
+    ├── m1_parsing.py / m1_agreement.py
+    ├── compound_parsing.py / compound_matching.py / compound_report.py
+    ├── upset_viz.py
+    └── reaction_parsing.py / reaction_matching.py / reaction_report.py
 ```
 
 ## Notes
 
-- This app is fully standalone — no connection to `literatureiq-engine`, Azure, or any database.
-- Adjusting the threshold slider re-runs only the cheap flagging step; embeddings are cached.
-- Scores weight each line equally; longer sections naturally contribute more to averages.
+- Fully standalone — no connection to `literatureiq-engine`, Azure, or any database.
+- Pre-pass/R1 threshold slider re-runs only flagging; embeddings are cached.
+- Scores weight each line equally; longer sections contribute more to averages.
