@@ -1,0 +1,404 @@
+[
+    {
+        "group_index": 0,
+        "section_type": "bibliographic",
+        "group_token_estimate": 1200,
+        "sections": [
+            {
+                "section_index": 0,
+                "section_label": "Cover",
+                "section_type": "bibliographic",
+                "start_line": 1,
+                "end_line": 41,
+                "estimated_tokens": 500
+            },
+            {
+                "section_index": 1,
+                "section_label": "PCT Application Page",
+                "section_type": "bibliographic",
+                "start_line": 42,
+                "end_line": 119,
+                "estimated_tokens": 700
+            }
+        ]
+    },
+    {
+        "group_index": 1,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 2000,
+        "sections": [
+            {
+                "section_index": 2,
+                "section_label": "Title and Summary of Invention (Parts 1-2)",
+                "section_type": "summary_of_invention",
+                "start_line": 120,
+                "end_line": 500,
+                "estimated_tokens": 2000
+            }
+        ]
+    },
+    {
+        "group_index": 2,
+        "section_type": "experimental_example",
+        "group_token_estimate": 3200,
+        "sections": [
+            {
+                "section_index": 3,
+                "section_label": "Process Description - Preferred Embodiment",
+                "section_type": "experimental_example",
+                "start_line": 501,
+                "end_line": 565,
+                "estimated_tokens": 3200
+            }
+        ]
+    },
+    {
+        "group_index": 3,
+        "section_type": "experimental_example",
+        "group_token_estimate": 2800,
+        "sections": [
+            {
+                "section_index": 4,
+                "section_label": "Process Description - Hydrogenation Conditions",
+                "section_type": "experimental_example",
+                "start_line": 566,
+                "end_line": 738,
+                "estimated_tokens": 2800
+            }
+        ]
+    },
+    {
+        "group_index": 4,
+        "section_type": "experimental_example",
+        "group_token_estimate": 3000,
+        "sections": [
+            {
+                "section_index": 5,
+                "section_label": "Process Description - Intermediates and Peptide Production",
+                "section_type": "experimental_example",
+                "start_line": 739,
+                "end_line": 950,
+                "estimated_tokens": 3000
+            }
+        ]
+    },
+    {
+        "group_index": 5,
+        "section_type": "experimental_intermediate",
+        "group_token_estimate": 1800,
+        "sections": [
+            {
+                "section_index": 6,
+                "section_label": "Preferred embodiments peptide fragments",
+                "section_type": "experimental_intermediate",
+                "start_line": 951,
+                "end_line": 970,
+                "estimated_tokens": 1800
+            }
+        ]
+    },
+    {
+        "group_index": 6,
+        "section_type": "experimental_intermediate",
+        "group_token_estimate": 3900,
+        "sections": [
+            {
+                "section_index": 7,
+                "section_label": "Use of peptides as intermediates",
+                "section_type": "experimental_intermediate",
+                "start_line": 971,
+                "end_line": 1090,
+                "estimated_tokens": 2500
+            },
+            {
+                "section_index": 8,
+                "section_label": "Formula I and process step (a)-(c)",
+                "section_type": "experimental_intermediate",
+                "start_line": 1091,
+                "end_line": 1158,
+                "estimated_tokens": 1400
+            }
+        ]
+    },
+    {
+        "group_index": 7,
+        "section_type": "experimental_intermediate",
+        "group_token_estimate": 2100,
+        "sections": [
+            {
+                "section_index": 9,
+                "section_label": "Reaction conditions and protecting groups",
+                "section_type": "experimental_intermediate",
+                "start_line": 1159,
+                "end_line": 1180,
+                "estimated_tokens": 500
+            },
+            {
+                "section_index": 10,
+                "section_label": "Intermediate IIc and IIIc preparation",
+                "section_type": "experimental_intermediate",
+                "start_line": 1181,
+                "end_line": 1258,
+                "estimated_tokens": 1600
+            }
+        ]
+    },
+    {
+        "group_index": 8,
+        "section_type": "experimental_intermediate",
+        "group_token_estimate": 2500,
+        "sections": [
+            {
+                "section_index": 11,
+                "section_label": "Process for protected peptide IIIc",
+                "section_type": "experimental_intermediate",
+                "start_line": 1259,
+                "end_line": 1358,
+                "estimated_tokens": 2500
+            }
+        ]
+    },
+    {
+        "group_index": 9,
+        "section_type": "experimental_example",
+        "group_token_estimate": 3580,
+        "sections": [
+            {
+                "section_index": 12,
+                "section_label": "Examples and Abbreviations",
+                "section_type": "experimental_example",
+                "start_line": 1359,
+                "end_line": 1400,
+                "estimated_tokens": 500
+            },
+            {
+                "section_index": 13,
+                "section_label": "Example 1",
+                "section_type": "experimental_example",
+                "start_line": 1401,
+                "end_line": 1411,
+                "estimated_tokens": 430
+            },
+            {
+                "section_index": 14,
+                "section_label": "Example 2",
+                "section_type": "experimental_example",
+                "start_line": 1412,
+                "end_line": 1417,
+                "estimated_tokens": 290
+            },
+            {
+                "section_index": 15,
+                "section_label": "Example 3",
+                "section_type": "experimental_example",
+                "start_line": 1418,
+                "end_line": 1423,
+                "estimated_tokens": 350
+            },
+            {
+                "section_index": 16,
+                "section_label": "Example 4",
+                "section_type": "experimental_example",
+                "start_line": 1424,
+                "end_line": 1437,
+                "estimated_tokens": 410
+            },
+            {
+                "section_index": 17,
+                "section_label": "Example 5",
+                "section_type": "experimental_example",
+                "start_line": 1438,
+                "end_line": 1443,
+                "estimated_tokens": 370
+            },
+            {
+                "section_index": 18,
+                "section_label": "Example 6",
+                "section_type": "experimental_example",
+                "start_line": 1444,
+                "end_line": 1449,
+                "estimated_tokens": 370
+            },
+            {
+                "section_index": 19,
+                "section_label": "Example 7",
+                "section_type": "experimental_example",
+                "start_line": 1450,
+                "end_line": 1463,
+                "estimated_tokens": 480
+            },
+            {
+                "section_index": 20,
+                "section_label": "Example 8",
+                "section_type": "experimental_example",
+                "start_line": 1464,
+                "end_line": 1469,
+                "estimated_tokens": 380
+            }
+        ]
+    },
+    {
+        "group_index": 10,
+        "section_type": "experimental_example",
+        "group_token_estimate": 3870,
+        "sections": [
+            {
+                "section_index": 21,
+                "section_label": "Example 9",
+                "section_type": "experimental_example",
+                "start_line": 1470,
+                "end_line": 1485,
+                "estimated_tokens": 540
+            },
+            {
+                "section_index": 22,
+                "section_label": "Example 10",
+                "section_type": "experimental_example",
+                "start_line": 1486,
+                "end_line": 1491,
+                "estimated_tokens": 360
+            },
+            {
+                "section_index": 23,
+                "section_label": "Example 11",
+                "section_type": "experimental_example",
+                "start_line": 1492,
+                "end_line": 1505,
+                "estimated_tokens": 460
+            },
+            {
+                "section_index": 24,
+                "section_label": "Example 12",
+                "section_type": "experimental_example",
+                "start_line": 1506,
+                "end_line": 1511,
+                "estimated_tokens": 360
+            },
+            {
+                "section_index": 25,
+                "section_label": "Example 13",
+                "section_type": "experimental_example",
+                "start_line": 1512,
+                "end_line": 1527,
+                "estimated_tokens": 440
+            },
+            {
+                "section_index": 26,
+                "section_label": "Example 14",
+                "section_type": "experimental_example",
+                "start_line": 1528,
+                "end_line": 1533,
+                "estimated_tokens": 460
+            },
+            {
+                "section_index": 27,
+                "section_label": "Example 15",
+                "section_type": "experimental_example",
+                "start_line": 1534,
+                "end_line": 1551,
+                "estimated_tokens": 400
+            },
+            {
+                "section_index": 28,
+                "section_label": "Example 16",
+                "section_type": "experimental_example",
+                "start_line": 1552,
+                "end_line": 1557,
+                "estimated_tokens": 420
+            },
+            {
+                "section_index": 29,
+                "section_label": "Example 17",
+                "section_type": "experimental_example",
+                "start_line": 1558,
+                "end_line": 1561,
+                "estimated_tokens": 430
+            }
+        ]
+    },
+    {
+        "group_index": 11,
+        "section_type": "experimental_example",
+        "group_token_estimate": 2980,
+        "sections": [
+            {
+                "section_index": 30,
+                "section_label": "Example 18",
+                "section_type": "experimental_example",
+                "start_line": 1562,
+                "end_line": 1575,
+                "estimated_tokens": 420
+            },
+            {
+                "section_index": 31,
+                "section_label": "Example 19",
+                "section_type": "experimental_example",
+                "start_line": 1576,
+                "end_line": 1581,
+                "estimated_tokens": 420
+            },
+            {
+                "section_index": 32,
+                "section_label": "Example 20",
+                "section_type": "experimental_example",
+                "start_line": 1582,
+                "end_line": 1601,
+                "estimated_tokens": 540
+            },
+            {
+                "section_index": 33,
+                "section_label": "Example 21",
+                "section_type": "experimental_example",
+                "start_line": 1602,
+                "end_line": 1602,
+                "estimated_tokens": 420
+            },
+            {
+                "section_index": 34,
+                "section_label": "Example 22",
+                "section_type": "experimental_example",
+                "start_line": 1603,
+                "end_line": 1617,
+                "estimated_tokens": 480
+            },
+            {
+                "section_index": 35,
+                "section_label": "Example 23",
+                "section_type": "experimental_example",
+                "start_line": 1618,
+                "end_line": 1643,
+                "estimated_tokens": 700
+            }
+        ]
+    },
+    {
+        "group_index": 12,
+        "section_type": "claims",
+        "group_token_estimate": 3400,
+        "sections": [
+            {
+                "section_index": 36,
+                "section_label": "Claims",
+                "section_type": "claims",
+                "start_line": 1644,
+                "end_line": 1850,
+                "estimated_tokens": 3400
+            }
+        ]
+    },
+    {
+        "group_index": 13,
+        "section_type": "claims",
+        "group_token_estimate": 3200,
+        "sections": [
+            {
+                "section_index": 37,
+                "section_label": "Claims 17-29",
+                "section_type": "claims",
+                "start_line": 1851,
+                "end_line": 1890,
+                "estimated_tokens": 3200
+            }
+        ]
+    }
+]

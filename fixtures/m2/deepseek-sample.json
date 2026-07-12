@@ -1,0 +1,38 @@
+[
+  {
+    "identifier": "DIPEA",
+    "identifier_type": "abbreviation",
+    "aliases": ["N,N-diisopropylethylamine"],
+    "resolved": true,
+    "unresolved_reference": false,
+    "section_label": "Example 1",
+    "role": "base"
+  },
+  {
+    "identifier": "Intermediate 1",
+    "identifier_type": "local_label",
+    "aliases": [],
+    "resolved": true,
+    "unresolved_reference": false,
+    "section_label": "Example 1",
+    "role": "reactant"
+  },
+  {
+    "identifier": "Compound Y",
+    "identifier_type": "local_label",
+    "aliases": [],
+    "resolved": false,
+    "unresolved_reference": true,
+    "section_label": "Example 3",
+    "role": "product"
+  },
+  {
+    "identifier": "water",
+    "identifier_type": "trivial_name",
+    "aliases": [],
+    "resolved": true,
+    "unresolved_reference": false,
+    "section_label": "Example 4",
+    "role": "solvent"
+  }
+]

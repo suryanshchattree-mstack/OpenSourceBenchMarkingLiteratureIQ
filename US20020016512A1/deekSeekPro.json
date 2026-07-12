@@ -1,0 +1,171 @@
+[
+  {
+    "group_index": 0,
+    "section_type": "bibliographic",
+    "group_token_estimate": 120,
+    "sections": [
+      {
+        "section_index": 0,
+        "section_label": "Bibliographic Information",
+        "section_type": "bibliographic",
+        "start_line": 1,
+        "end_line": 35,
+        "estimated_tokens": 120
+      }
+    ]
+  },
+  {
+    "group_index": 1,
+    "section_type": "abstract",
+    "group_token_estimate": 55,
+    "sections": [
+      {
+        "section_index": 1,
+        "section_label": "Abstract",
+        "section_type": "abstract",
+        "start_line": 36,
+        "end_line": 38,
+        "estimated_tokens": 55
+      }
+    ]
+  },
+  {
+    "group_index": 2,
+    "section_type": "background",
+    "group_token_estimate": 680,
+    "sections": [
+      {
+        "section_index": 2,
+        "section_label": "Title and Background",
+        "section_type": "background",
+        "start_line": 39,
+        "end_line": 53,
+        "estimated_tokens": 680
+      }
+    ]
+  },
+  {
+    "group_index": 3,
+    "section_type": "summary_of_invention",
+    "group_token_estimate": 340,
+    "sections": [
+      {
+        "section_index": 3,
+        "section_label": "Summary of the Invention",
+        "section_type": "summary_of_invention",
+        "start_line": 54,
+        "end_line": 87,
+        "estimated_tokens": 340
+      }
+    ]
+  },
+  {
+    "group_index": 4,
+    "section_type": "formula_definitions",
+    "group_token_estimate": 790,
+    "sections": [
+      {
+        "section_index": 4,
+        "section_label": "Detailed Description - Definitions and Process Parameters",
+        "section_type": "formula_definitions",
+        "start_line": 88,
+        "end_line": 155,
+        "estimated_tokens": 790
+      }
+    ]
+  },
+  {
+    "group_index": 5,
+    "section_type": "experimental_example",
+    "group_token_estimate": 3710,
+    "sections": [
+      {
+        "section_index": 5,
+        "section_label": "Example 1",
+        "section_type": "experimental_example",
+        "start_line": 156,
+        "end_line": 165,
+        "estimated_tokens": 440
+      },
+      {
+        "section_index": 6,
+        "section_label": "Example 2",
+        "section_type": "experimental_example",
+        "start_line": 166,
+        "end_line": 183,
+        "estimated_tokens": 390
+      },
+      {
+        "section_index": 7,
+        "section_label": "Example 3",
+        "section_type": "experimental_example",
+        "start_line": 184,
+        "end_line": 193,
+        "estimated_tokens": 440
+      },
+      {
+        "section_index": 8,
+        "section_label": "Example 4",
+        "section_type": "experimental_example",
+        "start_line": 194,
+        "end_line": 205,
+        "estimated_tokens": 390
+      },
+      {
+        "section_index": 9,
+        "section_label": "Example 5",
+        "section_type": "experimental_example",
+        "start_line": 206,
+        "end_line": 215,
+        "estimated_tokens": 390
+      },
+      {
+        "section_index": 10,
+        "section_label": "Example 6",
+        "section_type": "experimental_example",
+        "start_line": 216,
+        "end_line": 225,
+        "estimated_tokens": 390
+      },
+      {
+        "section_index": 11,
+        "section_label": "Example 7",
+        "section_type": "experimental_example",
+        "start_line": 226,
+        "end_line": 241,
+        "estimated_tokens": 390
+      },
+      {
+        "section_index": 12,
+        "section_label": "Example 8",
+        "section_type": "experimental_example",
+        "start_line": 242,
+        "end_line": 251,
+        "estimated_tokens": 440
+      },
+      {
+        "section_index": 13,
+        "section_label": "Example 9",
+        "section_type": "experimental_example",
+        "start_line": 252,
+        "end_line": 265,
+        "estimated_tokens": 440
+      }
+    ]
+  },
+  {
+    "group_index": 6,
+    "section_type": "claims",
+    "group_token_estimate": 1180,
+    "sections": [
+      {
+        "section_index": 14,
+        "section_label": "Claims",
+        "section_type": "claims",
+        "start_line": 266,
+        "end_line": 329,
+        "estimated_tokens": 1180
+      }
+    ]
+  }
+]

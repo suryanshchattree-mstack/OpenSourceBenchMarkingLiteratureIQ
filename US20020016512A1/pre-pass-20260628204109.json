@@ -1,0 +1,153 @@
+[ {
+  "group_index" : 0,
+  "section_type" : "bibliographic",
+  "group_token_estimate" : 280,
+  "sections" : [ {
+    "section_index" : 0,
+    "section_label" : "Cover Page / Bibliographic Data",
+    "section_type" : "bibliographic",
+    "start_line" : 1,
+    "end_line" : 35,
+    "estimated_tokens" : 280
+  } ]
+}, {
+  "group_index" : 1,
+  "section_type" : "abstract",
+  "group_token_estimate" : 120,
+  "sections" : [ {
+    "section_index" : 1,
+    "section_label" : "Abstract",
+    "section_type" : "abstract",
+    "start_line" : 36,
+    "end_line" : 45,
+    "estimated_tokens" : 120
+  } ]
+}, {
+  "group_index" : 2,
+  "section_type" : "background",
+  "group_token_estimate" : 700,
+  "sections" : [ {
+    "section_index" : 2,
+    "section_label" : "Background of the Invention",
+    "section_type" : "background",
+    "start_line" : 46,
+    "end_line" : 53,
+    "estimated_tokens" : 700
+  } ]
+}, {
+  "group_index" : 3,
+  "section_type" : "summary_of_invention",
+  "group_token_estimate" : 800,
+  "sections" : [ {
+    "section_index" : 3,
+    "section_label" : "Summary of the Invention",
+    "section_type" : "summary_of_invention",
+    "start_line" : 54,
+    "end_line" : 87,
+    "estimated_tokens" : 800
+  } ]
+}, {
+  "group_index" : 4,
+  "section_type" : "formula_definitions",
+  "group_token_estimate" : 1600,
+  "sections" : [ {
+    "section_index" : 4,
+    "section_label" : "Detailed Description - Definitions",
+    "section_type" : "formula_definitions",
+    "start_line" : 88,
+    "end_line" : 139,
+    "estimated_tokens" : 1600
+  } ]
+}, {
+  "group_index" : 5,
+  "section_type" : "summary_of_invention",
+  "group_token_estimate" : 1300,
+  "sections" : [ {
+    "section_index" : 5,
+    "section_label" : "Detailed Description - Process Conditions",
+    "section_type" : "summary_of_invention",
+    "start_line" : 140,
+    "end_line" : 155,
+    "estimated_tokens" : 1300
+  } ]
+}, {
+  "group_index" : 6,
+  "section_type" : "experimental_example",
+  "group_token_estimate" : 3600,
+  "sections" : [ {
+    "section_index" : 6,
+    "section_label" : "Example 1",
+    "section_type" : "experimental_example",
+    "start_line" : 156,
+    "end_line" : 165,
+    "estimated_tokens" : 550
+  }, {
+    "section_index" : 7,
+    "section_label" : "Example 2",
+    "section_type" : "experimental_example",
+    "start_line" : 166,
+    "end_line" : 183,
+    "estimated_tokens" : 350
+  }, {
+    "section_index" : 8,
+    "section_label" : "Example 3",
+    "section_type" : "experimental_example",
+    "start_line" : 184,
+    "end_line" : 193,
+    "estimated_tokens" : 550
+  }, {
+    "section_index" : 9,
+    "section_label" : "Example 4",
+    "section_type" : "experimental_example",
+    "start_line" : 194,
+    "end_line" : 205,
+    "estimated_tokens" : 300
+  }, {
+    "section_index" : 10,
+    "section_label" : "Example 5",
+    "section_type" : "experimental_example",
+    "start_line" : 206,
+    "end_line" : 215,
+    "estimated_tokens" : 350
+  }, {
+    "section_index" : 11,
+    "section_label" : "Example 6",
+    "section_type" : "experimental_example",
+    "start_line" : 216,
+    "end_line" : 231,
+    "estimated_tokens" : 350
+  }, {
+    "section_index" : 12,
+    "section_label" : "Example 7",
+    "section_type" : "experimental_example",
+    "start_line" : 232,
+    "end_line" : 241,
+    "estimated_tokens" : 350
+  }, {
+    "section_index" : 13,
+    "section_label" : "Example 8",
+    "section_type" : "experimental_example",
+    "start_line" : 242,
+    "end_line" : 251,
+    "estimated_tokens" : 350
+  }, {
+    "section_index" : 14,
+    "section_label" : "Example 9",
+    "section_type" : "experimental_example",
+    "start_line" : 252,
+    "end_line" : 265,
+    "estimated_tokens" : 450
+  } ]
+}, {
+  "group_index" : 7,
+  "section_type" : "claims",
+  "group_token_estimate" : 2100,
+  "sections" : [ {
+    "section_index" : 15,
+    "section_label" : "Claims",
+    "section_type" : "claims",
+    "start_line" : 266,
+    "end_line" : 329,
+    "estimated_tokens" : 2100
+  } ]
+} ]

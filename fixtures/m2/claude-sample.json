@@ -1,0 +1,29 @@
+[
+  {
+    "identifier": "N,N-diisopropylethylamine",
+    "identifier_type": "iupac",
+    "aliases": ["DIPEA"],
+    "resolved": true,
+    "unresolved_reference": false,
+    "section_label": "Example 1",
+    "role": "base"
+  },
+  {
+    "identifier": "tert-butyl (2S)-2-((tert-butoxycarbonyl)amino)-3-methylbutanoate",
+    "identifier_type": "iupac",
+    "aliases": ["Intermediate 1"],
+    "resolved": true,
+    "unresolved_reference": false,
+    "section_label": "Example 1",
+    "role": "reactant"
+  },
+  {
+    "identifier": "Compound X",
+    "identifier_type": "local_label",
+    "aliases": [],
+    "resolved": false,
+    "unresolved_reference": true,
+    "section_label": "Example 2",
+    "role": "product"
+  }
+]

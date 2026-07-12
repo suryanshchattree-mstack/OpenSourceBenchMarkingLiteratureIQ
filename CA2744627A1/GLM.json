@@ -1,0 +1,574 @@
+[
+    {
+        "group_index": 0,
+        "section_type": "bibliographic",
+        "group_token_estimate": 250,
+        "sections": [
+            {
+                "section_index": 0,
+                "section_label": "Front Page / Cover Page",
+                "section_type": "bibliographic",
+                "start_line": 1,
+                "end_line": 32,
+                "estimated_tokens": 250
+            }
+        ]
+    },
+    {
+        "group_index": 1,
+        "section_type": "abstract",
+        "group_token_estimate": 60,
+        "sections": [
+            {
+                "section_index": 1,
+                "section_label": "Abstract",
+                "section_type": "abstract",
+                "start_line": 33,
+                "end_line": 34,
+                "estimated_tokens": 60
+            }
+        ]
+    },
+    {
+        "group_index": 2,
+        "section_type": "bibliographic",
+        "group_token_estimate": 830,
+        "sections": [
+            {
+                "section_index": 2,
+                "section_label": "Office Info",
+                "section_type": "bibliographic",
+                "start_line": 35,
+                "end_line": 41,
+                "estimated_tokens": 30
+            },
+            {
+                "section_index": 3,
+                "section_label": "PCT Application Publication Page",
+                "section_type": "bibliographic",
+                "start_line": 42,
+                "end_line": 120,
+                "estimated_tokens": 800
+            }
+        ]
+    },
+    {
+        "group_index": 3,
+        "section_type": "technical_field",
+        "group_token_estimate": 120,
+        "sections": [
+            {
+                "section_index": 4,
+                "section_label": "Technical Field / Introduction",
+                "section_type": "technical_field",
+                "start_line": 121,
+                "end_line": 128,
+                "estimated_tokens": 120
+            }
+        ]
+    },
+    {
+        "group_index": 4,
+        "section_type": "background",
+        "group_token_estimate": 500,
+        "sections": [
+            {
+                "section_index": 5,
+                "section_label": "Background",
+                "section_type": "background",
+                "start_line": 129,
+                "end_line": 152,
+                "estimated_tokens": 500
+            }
+        ]
+    },
+    {
+        "group_index": 5,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 2100,
+        "sections": [
+            {
+                "section_index": 6,
+                "section_label": "Summary of Invention - Object and Convergent Approach",
+                "section_type": "summary_of_invention",
+                "start_line": 153,
+                "end_line": 167,
+                "estimated_tokens": 300
+            },
+            {
+                "section_index": 7,
+                "section_label": "Summary of Invention - Process Steps (a)-(h)",
+                "section_type": "summary_of_invention",
+                "start_line": 168,
+                "end_line": 246,
+                "estimated_tokens": 1800
+            }
+        ]
+    },
+    {
+        "group_index": 6,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 2200,
+        "sections": [
+            {
+                "section_index": 8,
+                "section_label": "Summary of Invention - Detailed Embodiment with Protecting Groups",
+                "section_type": "summary_of_invention",
+                "start_line": 247,
+                "end_line": 354,
+                "estimated_tokens": 2200
+            }
+        ]
+    },
+    {
+        "group_index": 7,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 2800,
+        "sections": [
+            {
+                "section_index": 9,
+                "section_label": "Summary of Invention - Protecting Group Definitions and Preferred Embodiments",
+                "section_type": "summary_of_invention",
+                "start_line": 355,
+                "end_line": 500,
+                "estimated_tokens": 2800
+            }
+        ]
+    },
+    {
+        "group_index": 8,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 2300,
+        "sections": [
+            {
+                "section_index": 10,
+                "section_label": "Most preferred embodiment: protecting groups and solution phase process steps",
+                "section_type": "summary_of_invention",
+                "start_line": 501,
+                "end_line": 538,
+                "estimated_tokens": 2300
+            }
+        ]
+    },
+    {
+        "group_index": 9,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 3300,
+        "sections": [
+            {
+                "section_index": 11,
+                "section_label": "Hydrogenation, coupling, deprotection and purification conditions",
+                "section_type": "summary_of_invention",
+                "start_line": 539,
+                "end_line": 618,
+                "estimated_tokens": 1900
+            },
+            {
+                "section_index": 12,
+                "section_label": "Solution phase synthesis of peptide fragment V",
+                "section_type": "summary_of_invention",
+                "start_line": 619,
+                "end_line": 673,
+                "estimated_tokens": 1400
+            }
+        ]
+    },
+    {
+        "group_index": 10,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 3500,
+        "sections": [
+            {
+                "section_index": 13,
+                "section_label": "Solution phase synthesis of peptide fragment VI",
+                "section_type": "summary_of_invention",
+                "start_line": 674,
+                "end_line": 721,
+                "estimated_tokens": 1200
+            },
+            {
+                "section_index": 14,
+                "section_label": "Solution phase synthesis of peptide fragment X and SPPS embodiment",
+                "section_type": "summary_of_invention",
+                "start_line": 722,
+                "end_line": 814,
+                "estimated_tokens": 2300
+            }
+        ]
+    },
+    {
+        "group_index": 11,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 3500,
+        "sections": [
+            {
+                "section_index": 15,
+                "section_label": "Peptide intermediates definitions (i)-(x) and preferred embodiments",
+                "section_type": "summary_of_invention",
+                "start_line": 815,
+                "end_line": 950,
+                "estimated_tokens": 3500
+            }
+        ]
+    },
+    {
+        "group_index": 12,
+        "section_type": "formula_definitions",
+        "group_token_estimate": 600,
+        "sections": [
+            {
+                "section_index": 16,
+                "section_label": "Preferred embodiments of peptides V–IV",
+                "section_type": "formula_definitions",
+                "start_line": 951,
+                "end_line": 968,
+                "estimated_tokens": 600
+            }
+        ]
+    },
+    {
+        "group_index": 13,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 3600,
+        "sections": [
+            {
+                "section_index": 17,
+                "section_label": "Use of peptides as intermediates in bivalirudin synthesis and bivalirudin formula I",
+                "section_type": "summary_of_invention",
+                "start_line": 969,
+                "end_line": 1099,
+                "estimated_tokens": 1500
+            },
+            {
+                "section_index": 18,
+                "section_label": "Process for production of bivalirudin (steps a–c)",
+                "section_type": "summary_of_invention",
+                "start_line": 1100,
+                "end_line": 1142,
+                "estimated_tokens": 500
+            },
+            {
+                "section_index": 19,
+                "section_label": "Process conditions and protecting groups for bivalirudin synthesis",
+                "section_type": "summary_of_invention",
+                "start_line": 1143,
+                "end_line": 1168,
+                "estimated_tokens": 300
+            },
+            {
+                "section_index": 20,
+                "section_label": "Purification, SPPS/HPPS, and intermediates for bivalirudin process",
+                "section_type": "summary_of_invention",
+                "start_line": 1169,
+                "end_line": 1188,
+                "estimated_tokens": 400
+            },
+            {
+                "section_index": 21,
+                "section_label": "Process for production of N-terminally protected peptide IIc (steps a–d)",
+                "section_type": "summary_of_invention",
+                "start_line": 1189,
+                "end_line": 1245,
+                "estimated_tokens": 750
+            },
+            {
+                "section_index": 22,
+                "section_label": "Intermediates for IIc process",
+                "section_type": "summary_of_invention",
+                "start_line": 1246,
+                "end_line": 1257,
+                "estimated_tokens": 150
+            }
+        ]
+    },
+    {
+        "group_index": 14,
+        "section_type": "summary_of_invention",
+        "group_token_estimate": 1300,
+        "sections": [
+            {
+                "section_index": 23,
+                "section_label": "Process for production of protected peptide IIIc (steps a–g)",
+                "section_type": "summary_of_invention",
+                "start_line": 1258,
+                "end_line": 1345,
+                "estimated_tokens": 1150
+            },
+            {
+                "section_index": 24,
+                "section_label": "Intermediates for IIIc process",
+                "section_type": "summary_of_invention",
+                "start_line": 1346,
+                "end_line": 1357,
+                "estimated_tokens": 150
+            }
+        ]
+    },
+    {
+        "group_index": 15,
+        "section_type": "formula_definitions",
+        "group_token_estimate": 130,
+        "sections": [
+            {
+                "section_index": 25,
+                "section_label": "Peptide intermediate formulas (continued)",
+                "section_type": "formula_definitions",
+                "start_line": 1358,
+                "end_line": 1358,
+                "estimated_tokens": 130
+            }
+        ]
+    },
+    {
+        "group_index": 16,
+        "section_type": "experimental_example",
+        "group_token_estimate": 3891,
+        "sections": [
+            {
+                "section_index": 26,
+                "section_label": "Example 1: Preparation of H-Asn-Gly¹⁰-OBzl · TFA",
+                "section_type": "experimental_example",
+                "start_line": 1359,
+                "end_line": 1400,
+                "estimated_tokens": 550
+            },
+            {
+                "section_index": 27,
+                "section_label": "Example 1",
+                "section_type": "experimental_example",
+                "start_line": 1401,
+                "end_line": 1412,
+                "estimated_tokens": 244
+            },
+            {
+                "section_index": 28,
+                "section_label": "Example 2",
+                "section_type": "experimental_example",
+                "start_line": 1413,
+                "end_line": 1418,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 29,
+                "section_label": "Example 3",
+                "section_type": "experimental_example",
+                "start_line": 1419,
+                "end_line": 1424,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 30,
+                "section_label": "Example 4",
+                "section_type": "experimental_example",
+                "start_line": 1425,
+                "end_line": 1438,
+                "estimated_tokens": 207
+            },
+            {
+                "section_index": 31,
+                "section_label": "Example 5",
+                "section_type": "experimental_example",
+                "start_line": 1439,
+                "end_line": 1444,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 32,
+                "section_label": "Example 6",
+                "section_type": "experimental_example",
+                "start_line": 1445,
+                "end_line": 1450,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 33,
+                "section_label": "Example 7",
+                "section_type": "experimental_example",
+                "start_line": 1451,
+                "end_line": 1464,
+                "estimated_tokens": 207
+            },
+            {
+                "section_index": 34,
+                "section_label": "Example 8",
+                "section_type": "experimental_example",
+                "start_line": 1465,
+                "end_line": 1470,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 35,
+                "section_label": "Example 9",
+                "section_type": "experimental_example",
+                "start_line": 1471,
+                "end_line": 1486,
+                "estimated_tokens": 257
+            },
+            {
+                "section_index": 36,
+                "section_label": "Example 10",
+                "section_type": "experimental_example",
+                "start_line": 1487,
+                "end_line": 1492,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 37,
+                "section_label": "Example 11",
+                "section_type": "experimental_example",
+                "start_line": 1493,
+                "end_line": 1506,
+                "estimated_tokens": 207
+            },
+            {
+                "section_index": 38,
+                "section_label": "Example 12",
+                "section_type": "experimental_example",
+                "start_line": 1507,
+                "end_line": 1512,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 39,
+                "section_label": "Example 13",
+                "section_type": "experimental_example",
+                "start_line": 1513,
+                "end_line": 1526,
+                "estimated_tokens": 207
+            },
+            {
+                "section_index": 40,
+                "section_label": "Example 14",
+                "section_type": "experimental_example",
+                "start_line": 1527,
+                "end_line": 1534,
+                "estimated_tokens": 136
+            },
+            {
+                "section_index": 41,
+                "section_label": "Example 15",
+                "section_type": "experimental_example",
+                "start_line": 1535,
+                "end_line": 1552,
+                "estimated_tokens": 190
+            },
+            {
+                "section_index": 42,
+                "section_label": "Example 16",
+                "section_type": "experimental_example",
+                "start_line": 1553,
+                "end_line": 1558,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 43,
+                "section_label": "Example 17",
+                "section_type": "experimental_example",
+                "start_line": 1559,
+                "end_line": 1570,
+                "estimated_tokens": 148
+            },
+            {
+                "section_index": 44,
+                "section_label": "Example 18",
+                "section_type": "experimental_example",
+                "start_line": 1571,
+                "end_line": 1576,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 45,
+                "section_label": "Example 19",
+                "section_type": "experimental_example",
+                "start_line": 1577,
+                "end_line": 1582,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 46,
+                "section_label": "Example 20",
+                "section_type": "experimental_example",
+                "start_line": 1583,
+                "end_line": 1596,
+                "estimated_tokens": 207
+            },
+            {
+                "section_index": 47,
+                "section_label": "Example 21",
+                "section_type": "experimental_example",
+                "start_line": 1597,
+                "end_line": 1602,
+                "estimated_tokens": 101
+            },
+            {
+                "section_index": 48,
+                "section_label": "Example 22",
+                "section_type": "experimental_example",
+                "start_line": 1603,
+                "end_line": 1620,
+                "estimated_tokens": 220
+            }
+        ]
+    },
+    {
+        "group_index": 17,
+        "section_type": "experimental_example",
+        "group_token_estimate": 389,
+        "sections": [
+            {
+                "section_index": 49,
+                "section_label": "Example 23 (Bivalirudin)",
+                "section_type": "experimental_example",
+                "start_line": 1621,
+                "end_line": 1648,
+                "estimated_tokens": 389
+            }
+        ]
+    },
+    {
+        "group_index": 18,
+        "section_type": "claims",
+        "group_token_estimate": 3900,
+        "sections": [
+            {
+                "section_index": 50,
+                "section_label": "Claims",
+                "section_type": "claims",
+                "start_line": 1649,
+                "end_line": 1850,
+                "estimated_tokens": 3900
+            }
+        ]
+    },
+    {
+        "group_index": 19,
+        "section_type": "claims",
+        "group_token_estimate": 1660,
+        "sections": [
+            {
+                "section_index": 51,
+                "section_label": "Claim 19",
+                "section_type": "claims",
+                "start_line": 1851,
+                "end_line": 1860,
+                "estimated_tokens": 950
+            },
+            {
+                "section_index": 52,
+                "section_label": "Claims 20-28",
+                "section_type": "claims",
+                "start_line": 1861,
+                "end_line": 1886,
+                "estimated_tokens": 650
+            },
+            {
+                "section_index": 53,
+                "section_label": "Claim 29",
+                "section_type": "claims",
+                "start_line": 1887,
+                "end_line": 1890,
+                "estimated_tokens": 60
+            }
+        ]
+    }
+]
