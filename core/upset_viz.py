@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from collections import Counter
+from io import BytesIO
 from typing import Collection
 
 import matplotlib
@@ -36,9 +38,24 @@ def _element_size(n_categories: int, n_intersections: int) -> float:
     return 36.0
 
 
+def _upset_backend_risky() -> bool:
+    """
+    Upsetplot + matplotlib text draw has segfaulted on Streamlit Cloud Python 3.14
+    (uncaught by try/except). Skip the UpSet path on 3.13+.
+    """
+    return sys.version_info >= (3, 13)
+
+
 def _force_draw(fig: Figure) -> None:
     """Force a full canvas draw so deferred artist errors surface before Streamlit savefig."""
     fig.canvas.draw()
+
+
+def figure_to_png_bytes(fig: Figure, *, dpi: int = 120) -> bytes:
+    """Serialize a figure to PNG without going through ``st.pyplot``."""
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
+    return buf.getvalue()
 
 
 def _try_upset_plot(series, *, element_size: float, show_counts: bool) -> Figure:
@@ -73,8 +90,10 @@ def render_upset(memberships: list[frozenset[str]]) -> Figure:
     cluster). Empty input yields an empty placeholder figure.
 
     On Streamlit Cloud (Python 3.14 / newer matplotlib), upsetplot can fail either
-    during ``plot()`` or later during ``savefig``/draw. We force a canvas draw
-    here and fall back to a simple intersection bar chart on any failure.
+    during ``plot()`` or later during ``savefig``/draw — including hard segfaults
+    that bypass Python exception handling. We skip upsetplot on Python 3.13+,
+    force a canvas draw when we do use it, and fall back to a simple intersection
+    bar chart on any failure.
     """
     if not memberships:
         fig = Figure(figsize=(7, 2.5))
@@ -83,6 +102,22 @@ def render_upset(memberships: list[frozenset[str]]) -> Figure:
         ax.set_title("No compound clusters to plot")
         fig.tight_layout()
         return fig
+
+    categories = membership_category_labels(memberships)
+    intersections = {frozenset(membership) for membership in memberships if membership}
+    n_categories = len(categories)
+    n_intersections = max(len(intersections), 1)
+    fig_width, fig_height = _figure_size(n_categories, n_intersections)
+    element_size = _element_size(n_categories, n_intersections)
+
+    if _upset_backend_risky():
+        return _fallback_intersection_figure(
+            memberships,
+            categories,
+            reason=f"Python {sys.version_info.major}.{sys.version_info.minor} skips upsetplot (Cloud segfault risk)",
+            fig_width=fig_width,
+            fig_height=min(fig_height, 6.0),
+        )
 
     # Lazy import so unit tests that never plot can skip the dependency path.
     from upsetplot import from_memberships
@@ -95,13 +130,6 @@ def render_upset(memberships: list[frozenset[str]]) -> Figure:
             pd.options.mode.copy_on_write = False
     except Exception:
         pass
-
-    categories = membership_category_labels(memberships)
-    intersections = {frozenset(membership) for membership in memberships if membership}
-    n_categories = len(categories)
-    n_intersections = max(len(intersections), 1)
-    fig_width, fig_height = _figure_size(n_categories, n_intersections)
-    element_size = _element_size(n_categories, n_intersections)
 
     series = from_memberships(
         [list(membership) for membership in memberships],
@@ -166,7 +194,10 @@ def _fallback_intersection_figure(
     )
     _ = categories
     fig.tight_layout()
-    _force_draw(fig)
+    try:
+        _force_draw(fig)
+    except Exception:
+        pass
     return fig
 
 

@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
-from core.upset_viz import estimate_upset_size, membership_category_labels, render_upset
+from core.upset_viz import (
+    estimate_upset_size,
+    figure_to_png_bytes,
+    membership_category_labels,
+    render_upset,
+)
 
 
 class UpsetVizTest(unittest.TestCase):
@@ -61,6 +67,19 @@ class UpsetVizTest(unittest.TestCase):
         )
         self.assertIsNotNone(fig)
         self.assertGreaterEqual(fig.get_size_inches()[0], 7.0)
+        png = figure_to_png_bytes(fig)
+        self.assertGreater(len(png), 100)
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
+    def test_risky_python_skips_upsetplot(self) -> None:
+        memberships = [
+            frozenset({"Claude", "DeepSeek"}),
+            frozenset({"Claude"}),
+        ]
+        with mock.patch("core.upset_viz._upset_backend_risky", return_value=True):
+            fig = render_upset(memberships)
+        titles = [ax.get_title() for ax in fig.axes]
+        self.assertTrue(any("fallback" in title.lower() for title in titles))
 
 
 if __name__ == "__main__":

@@ -4,10 +4,10 @@ Single-screen tool to compare N labeled model runs across five optional output k
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ (for Streamlit Community Cloud, set **Python 3.12** in Advanced settings — `runtime.txt` is ignored by Cloud and the platform may default to 3.14)
 - macOS Apple Silicon (MPS) recommended — falls back to CPU if MPS unavailable
 - ~4 GB free RAM for loading three embedding models (used by pre-pass and R1)
-- `rdkit` (reactions SMILES axis) and `upsetplot` (M1/M2 overlap plots)
+- `rdkit` (reactions SMILES axis) and `upsetplot` (M1/M2 overlap plots; falls back to a bar chart on Python 3.13+)
 - Optional: Azure Storage connection string for blob fetch (manual upload still works without it)
 
 ## Setup
@@ -49,7 +49,7 @@ Opens at http://localhost:8501 — one page, no sidebar multi-page nav.
 ### Blob fetch workflow
 
 1. Enter a **Patent ID** (e.g. `CN105884573B`).
-2. Per model row: set **Label**, **Pipeline ID** (defaults: `section-wise-v1` / `section-wise-v1-deepseek-flash`), click **Fetch from blob**.
+2. Per model row: set **Label**, **Pipeline ID** (defaults: `section-wise-v1`, `section-wise-v2`, …), click **Fetch from blob**.
 3. Optionally click **Fetch markdown** for the shared enriched markdown.
 4. Status captions show which kinds were found (and blob path) vs missing.
 5. **Clear fetched** (or **Clear markdown**) drops session-fetched bytes and falls back to manual uploaders.

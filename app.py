@@ -17,7 +17,6 @@ from core.blob_client import (
     fetch_pipeline_artifacts,
     resolve_base_path,
 )
-from core.blob_paths import BASELINE_PIPELINE_ID
 from core.compound_matching import diff_compounds_nway
 from core.compound_parsing import parse_compounds_json
 from core.compound_report import (
@@ -37,8 +36,14 @@ from core.m1_agreement import (
     compute_m1_agreement,
     filter_cluster_rows,
 )
+from core.m1_consensus import (
+    CHART_PATTERNS,
+    CONSENSUS_FIELDS,
+    compute_cluster_consensus,
+    consensus_rows_to_dataframe,
+)
 from core.m1_parsing import QUANTITY_FIELDS, parse_m1_json
-from core.m1_visuals import build_agreement_heatmap
+from core.m1_visuals import build_agreement_heatmap, build_consensus_chart
 from core.models import PrepassRun
 from core.parsing import parse_prepass_json, total_lines_from_markdown, type_distribution
 from core.r1_parsing import parse_r1_json
@@ -58,7 +63,6 @@ import matplotlib.pyplot as plt
 load_dotenv()
 
 DEFAULT_RUN_LABELS = ["Claude", "DeepSeek"]
-DEFAULT_PIPELINE_IDS = [BASELINE_PIPELINE_ID, "section-wise-v1-deepseek-flash"]
 
 FILE_KINDS = ("prepass", "m1", "m2", "r1", "reactions")
 FILE_KIND_LABELS = {
@@ -114,30 +118,63 @@ def _format_quantity(quantity: dict[str, float | None] | Mapping[str, float | No
 
 
 def _show_upset(memberships: list[frozenset[str]], *, key: str) -> None:
-    """Render an UpSet figure full-width and close it to avoid Matplotlib leaks."""
-    from core.upset_viz import _fallback_intersection_figure, membership_category_labels
+    """Render intersection viz full-width without crashing the page on Cloud."""
+    from core.upset_viz import (
+        _fallback_intersection_figure,
+        figure_to_png_bytes,
+        membership_category_labels,
+    )
+
+    def _display_fig(fig) -> None:
+        # Prefer PNG + st.image: st.pyplot has segfaulted on Cloud Python 3.14.
+        try:
+            st.image(figure_to_png_bytes(fig), use_container_width=True)
+        except TypeError:
+            st.image(figure_to_png_bytes(fig), width="stretch")
 
     fig = None
     try:
         fig = render_upset(memberships)
-        st.pyplot(fig, clear_figure=True, use_container_width=True)
+        _display_fig(fig)
     except Exception as exc:  # noqa: BLE001 — Cloud draw/savefig can fail after plot()
         if fig is not None:
             plt.close(fig)
+            fig = None
         categories = membership_category_labels(memberships)
-        fallback = _fallback_intersection_figure(
-            memberships,
-            categories,
-            reason=str(exc),
-            fig_width=10.0,
-            fig_height=4.5,
-        )
-        st.warning(
-            "UpSet plot failed on this host; showing intersection bar chart instead. "
-            f"Detail: {exc}"
-        )
-        st.pyplot(fallback, clear_figure=True, use_container_width=True)
-        plt.close(fallback)
+        fallback = None
+        try:
+            fallback = _fallback_intersection_figure(
+                memberships,
+                categories,
+                reason=str(exc),
+                fig_width=10.0,
+                fig_height=4.5,
+            )
+            st.warning(
+                "UpSet plot failed on this host; showing intersection bar chart instead. "
+                f"Detail: {exc}"
+            )
+            _display_fig(fallback)
+        except Exception as fallback_exc:  # noqa: BLE001
+            st.warning(
+                "Could not render intersection chart; showing counts as a table instead. "
+                f"Detail: {exc} / {fallback_exc}"
+            )
+            from collections import Counter
+
+            counts = Counter(
+                " ∩ ".join(sorted(m)) if m else "(empty)"
+                for m in memberships
+                if m
+            )
+            st.dataframe(
+                [{"intersection": label, "clusters": n} for label, n in counts.most_common()],
+                use_container_width=True,
+                hide_index=True,
+            )
+        finally:
+            if fallback is not None:
+                plt.close(fallback)
     else:
         plt.close(fig)
     _ = key  # reserved for future keyed caching / uniqueness
@@ -230,9 +267,8 @@ def run_line_comparison(
 
 
 def _default_pipeline_id(index: int) -> str:
-    if index < len(DEFAULT_PIPELINE_IDS):
-        return DEFAULT_PIPELINE_IDS[index]
-    return ""
+    """Default blob pipeline id for model row ``index``: section-wise-v1, v2, …"""
+    return f"section-wise-v{index + 1}"
 
 
 def _format_fetch_status(status: dict[str, FetchResult] | None) -> str:
@@ -729,6 +765,68 @@ def render_m1_section(rows: list[ModelUploads], baseline: str) -> None:
         ),
         use_container_width=True,
     )
+
+    st.subheader("Cluster consensus (N-way, all models)")
+    st.caption(
+        "Looks across all uploaded models per cluster/field — flags cases where "
+        "≥2 non-baseline models agree with each other against the baseline. "
+        "Tables list **majority_supporters** and **not_in_majority** "
+        "(models whose value differs from the majority, including baseline)."
+    )
+    consensus_rows = compute_cluster_consensus(agreement.nway, baseline)
+    st.plotly_chart(build_consensus_chart(consensus_rows), use_container_width=True)
+
+    flagged = [row for row in consensus_rows if row.pattern == "majority_vs_baseline"]
+    st.metric("Clusters flagged (majority vs baseline)", len(flagged))
+    if flagged:
+        st.dataframe(
+            consensus_rows_to_dataframe(flagged, model_labels=nway.labels),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    field_options = list(CONSENSUS_FIELDS)
+    pattern_options = list(CHART_PATTERNS)
+    default_patterns = [
+        pattern
+        for pattern in ("majority_vs_baseline", "split")
+        if pattern in pattern_options
+    ]
+    filter_cols = st.columns(2)
+    with filter_cols[0]:
+        selected_fields = st.multiselect(
+            "Consensus fields",
+            options=field_options,
+            default=field_options,
+            key="m1_consensus_fields",
+        )
+    with filter_cols[1]:
+        selected_patterns = st.multiselect(
+            "Consensus patterns",
+            options=pattern_options,
+            default=default_patterns,
+            key="m1_consensus_patterns",
+        )
+
+    filtered_consensus = [
+        row
+        for row in consensus_rows
+        if row.pattern in CHART_PATTERNS
+        and row.field in selected_fields
+        and row.pattern in selected_patterns
+    ]
+    st.caption(
+        f"Showing {len(filtered_consensus)} consensus row(s) after filters "
+        f"(excluding single-model clusters)."
+    )
+    if filtered_consensus:
+        st.dataframe(
+            consensus_rows_to_dataframe(filtered_consensus, model_labels=nway.labels),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.success("No consensus rows match the current filters.")
 
     st.subheader("Label counts")
     st.dataframe(nway_label_counts_dataframe(nway), use_container_width=True, hide_index=True)

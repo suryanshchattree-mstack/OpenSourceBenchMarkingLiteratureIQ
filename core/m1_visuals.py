@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections import Counter
+from typing import Mapping, Sequence
 
 import plotly.graph_objects as go
 
 from core.m1_agreement import ModelAgreementSummary
+from core.m1_consensus import (
+    CHART_PATTERNS,
+    CONSENSUS_FIELDS,
+    FieldConsensusRow,
+)
 
 HEATMAP_FIELDS = (
     ("identifier_type", "identifier_type"),
@@ -15,6 +21,13 @@ HEATMAP_FIELDS = (
     ("alias_jaccard", "alias_jaccard"),
     ("quantity_presence", "quantity_presence"),
 )
+
+CONSENSUS_PATTERN_COLORS = {
+    "unanimous": "#2ca02c",
+    "baseline_majority": "#1f77b4",
+    "majority_vs_baseline": "#d62728",
+    "split": "#ff7f0e",
+}
 
 
 def _rate_for_field(summary: ModelAgreementSummary, field_key: str) -> float | None:
@@ -104,4 +117,60 @@ def build_agreement_heatmap(
             showarrow=False,
         )
     _ = field_keys  # retained for readability / future extensions
+    return fig
+
+
+def build_consensus_chart(
+    rows: Sequence[FieldConsensusRow],
+    *,
+    title: str = "Cluster consensus by field",
+) -> go.Figure:
+    """
+    Stacked bar chart of consensus patterns per field.
+
+    Rows with ``pattern="single_model"`` are excluded (need ≥3 models).
+    ``majority_vs_baseline`` uses a distinct red segment as the review signal.
+    """
+    countable = [row for row in rows if row.pattern in CHART_PATTERNS]
+    fields = list(CONSENSUS_FIELDS)
+    counts_by_field: dict[str, Counter[str]] = {
+        field: Counter() for field in fields
+    }
+    for row in countable:
+        if row.field in counts_by_field:
+            counts_by_field[row.field][row.pattern] += 1
+
+    fig = go.Figure()
+    for pattern in CHART_PATTERNS:
+        fig.add_trace(
+            go.Bar(
+                name=pattern,
+                x=fields,
+                y=[counts_by_field[field][pattern] for field in fields],
+                marker_color=CONSENSUS_PATTERN_COLORS[pattern],
+                hovertemplate=(
+                    f"field=%{{x}}<br>pattern={pattern}<br>count=%{{y}}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        barmode="stack",
+        height=max(280, 120 + 24 * max(len(fields), 1)),
+        margin=dict(l=60, r=40, t=60, b=100),
+        xaxis=dict(title="", tickangle=-25),
+        yaxis=dict(title="Clusters", rangemode="tozero"),
+        legend=dict(title="Pattern", orientation="h", yanchor="bottom", y=1.02),
+    )
+    if not countable:
+        fig.add_annotation(
+            text="No multi-model consensus rows to plot",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
     return fig
