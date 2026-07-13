@@ -45,6 +45,23 @@ class UpsetVizTest(unittest.TestCase):
         self.assertGreaterEqual(width, 7.0)
         self.assertGreaterEqual(height, 4.0)
 
+    def test_fallback_intersection_figure(self) -> None:
+        from core.upset_viz import _fallback_intersection_figure
+
+        fig = _fallback_intersection_figure(
+            [
+                frozenset({"Claude", "DeepSeek"}),
+                frozenset({"Claude"}),
+                frozenset({"Claude", "DeepSeek"}),
+            ],
+            ["Claude", "DeepSeek"],
+            reason="Invalid RGBA argument: nan",
+            fig_width=8.0,
+            fig_height=4.0,
+        )
+        self.assertIsNotNone(fig)
+        self.assertGreaterEqual(fig.get_size_inches()[0], 7.0)
+
 
 if __name__ == "__main__":
     unittest.main()
