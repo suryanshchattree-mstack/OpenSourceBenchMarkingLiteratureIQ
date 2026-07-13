@@ -115,9 +115,31 @@ def _format_quantity(quantity: dict[str, float | None] | Mapping[str, float | No
 
 def _show_upset(memberships: list[frozenset[str]], *, key: str) -> None:
     """Render an UpSet figure full-width and close it to avoid Matplotlib leaks."""
-    fig = render_upset(memberships)
-    st.pyplot(fig, clear_figure=True, use_container_width=True)
-    plt.close(fig)
+    from core.upset_viz import _fallback_intersection_figure, membership_category_labels
+
+    fig = None
+    try:
+        fig = render_upset(memberships)
+        st.pyplot(fig, clear_figure=True, use_container_width=True)
+    except Exception as exc:  # noqa: BLE001 — Cloud draw/savefig can fail after plot()
+        if fig is not None:
+            plt.close(fig)
+        categories = membership_category_labels(memberships)
+        fallback = _fallback_intersection_figure(
+            memberships,
+            categories,
+            reason=str(exc),
+            fig_width=10.0,
+            fig_height=4.5,
+        )
+        st.warning(
+            "UpSet plot failed on this host; showing intersection bar chart instead. "
+            f"Detail: {exc}"
+        )
+        st.pyplot(fallback, clear_figure=True, use_container_width=True)
+        plt.close(fallback)
+    else:
+        plt.close(fig)
     _ = key  # reserved for future keyed caching / uniqueness
 
 

@@ -1,8 +1,7 @@
 streamlit>=1.33.0
 sentence-transformers>=2.6.0
 torch>=2.2.0
-# pandas 3.x enables Copy-on-Write by default and breaks upsetplot 0.9
-# (Invalid RGBA argument: nan in plot_matrix). Keep 2.x until UpSetPlot is fixed.
+# pandas 3.x / CoW breaks upsetplot 0.9 (NaN edgecolors). Keep 2.x.
 pandas>=2.2.0,<3
 numpy>=1.26.0
 plotly>=5.20.0
