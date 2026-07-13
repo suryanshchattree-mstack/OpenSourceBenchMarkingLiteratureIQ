@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+.env
 .streamlit/secrets.toml
 CA2744627A1/
 US20020016512A1/

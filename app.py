@@ -8,7 +8,16 @@ from typing import Any, Mapping
 
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
+from core.blob_client import (
+    BlobConfigError,
+    FetchResult,
+    fetch_markdown,
+    fetch_pipeline_artifacts,
+    resolve_base_path,
+)
+from core.blob_paths import BASELINE_PIPELINE_ID
 from core.compound_matching import diff_compounds_nway
 from core.compound_parsing import parse_compounds_json
 from core.compound_report import (
@@ -46,7 +55,10 @@ from core.upset_viz import render_upset
 from core.visuals import build_timeline_figure, build_type_histogram
 import matplotlib.pyplot as plt
 
+load_dotenv()
+
 DEFAULT_RUN_LABELS = ["Claude", "DeepSeek"]
+DEFAULT_PIPELINE_IDS = [BASELINE_PIPELINE_ID, "section-wise-v1-deepseek-flash"]
 
 FILE_KINDS = ("prepass", "m1", "m2", "r1", "reactions")
 FILE_KIND_LABELS = {
@@ -195,13 +207,66 @@ def run_line_comparison(
     }
 
 
+def _default_pipeline_id(index: int) -> str:
+    if index < len(DEFAULT_PIPELINE_IDS):
+        return DEFAULT_PIPELINE_IDS[index]
+    return ""
+
+
+def _format_fetch_status(status: dict[str, FetchResult] | None) -> str:
+    if not status:
+        return ""
+    parts: list[str] = []
+    for kind in FILE_KINDS:
+        result = status.get(kind)
+        label = FILE_KIND_LABELS[kind].replace(" JSON", "")
+        if result is None:
+            parts.append(f"{label} —")
+            continue
+        if result.found and result.blob_path:
+            short = result.blob_path
+            if "/extraction/" in short:
+                short = short.split("/extraction/", 1)[1]
+                short = f"extraction/{short}"
+            elif short.endswith("/reactions.json"):
+                short = "reactions.json"
+            elif "/markdown.md" in short:
+                short = short.rsplit("/", 2)[-2] + "/" + short.rsplit("/", 1)[-1]
+            parts.append(f"{label} ✓ `{short}`")
+        elif result.error:
+            parts.append(f"{label} ✗ {result.error}")
+        else:
+            parts.append(f"{label} ✗ not found")
+    return " · ".join(parts)
+
+
+def _clear_fetched_row(index: int) -> None:
+    for kind in FILE_KINDS:
+        st.session_state.pop(f"fetched_{kind}_{index}", None)
+    st.session_state.pop(f"fetch_status_{index}", None)
+
+
+def _base_path_cache() -> dict[str, str]:
+    if "blob_base_path_cache" not in st.session_state:
+        st.session_state.blob_base_path_cache = {}
+    return st.session_state.blob_base_path_cache
+
+
+def _resolve_base_for_ui(patent_id: str) -> str:
+    return resolve_base_path(patent_id, cache=_base_path_cache())
+
+
 def _collect_model_rows(num_models: int) -> list[ModelUploads]:
-    """Build labeled model rows from session state upload widgets."""
+    """Build labeled model rows; prefer blob-fetched bytes over uploads."""
     rows: list[ModelUploads] = []
     for index in range(num_models):
         label = st.session_state.get(f"model_label_{index}", _default_label(index)).strip()
         files: dict[str, tuple[bytes, str]] = {}
         for kind in FILE_KINDS:
+            fetched = st.session_state.get(f"fetched_{kind}_{index}")
+            if fetched is not None:
+                files[kind] = fetched
+                continue
             uploaded = st.session_state.get(f"{kind}_file_{index}")
             if uploaded is not None:
                 files[kind] = (uploaded.getvalue(), uploaded.name)
@@ -827,10 +892,20 @@ def main():
     )
     st.title("Multi-model Benchmark")
     st.caption(
-        "Upload labeled model runs (optional file slots per kind), pick a shared baseline, "
-        "and run all available benchmarks. Each section skips independently when it lacks "
-        "enough uploads."
+        "Fetch labeled model runs from Azure Blob by Patent ID + Pipeline ID, "
+        "or upload files manually. Pick a shared baseline and run all available "
+        "benchmarks. Each section skips independently when it lacks enough inputs."
     )
+
+    st.subheader("Patent")
+    patent_col, _ = st.columns([2, 3])
+    with patent_col:
+        st.text_input(
+            "Patent ID",
+            key="patent_id",
+            placeholder="e.g. CN105884573B",
+            help="Used with each row's Pipeline ID to fetch artifacts from Azure Blob.",
+        )
 
     st.subheader("Model uploads")
     num_models = st.number_input(
@@ -844,7 +919,10 @@ def main():
 
     for index in range(num_models):
         st.markdown(f"**Model {index + 1}**")
-        label_col, *file_cols = st.columns([1.2, 1, 1, 1, 1, 1])
+        label_col, pipeline_col, fetch_col, clear_col = st.columns(
+            [1.5, 2.0, 1.0, 1.0],
+            vertical_alignment="bottom",
+        )
         with label_col:
             st.text_input(
                 "Label",
@@ -852,16 +930,95 @@ def main():
                 key=f"model_label_{index}",
                 placeholder="e.g. Claude, DeepSeek",
             )
+        with pipeline_col:
+            st.text_input(
+                "Pipeline ID",
+                value=_default_pipeline_id(index),
+                key=f"pipeline_id_{index}",
+                placeholder="e.g. section-wise-v1",
+            )
+        with fetch_col:
+            fetch_clicked = st.button(
+                "Fetch from blob",
+                key=f"fetch_blob_{index}",
+                use_container_width=True,
+            )
+        with clear_col:
+            clear_clicked = st.button(
+                "Clear fetched",
+                key=f"clear_fetched_{index}",
+                use_container_width=True,
+            )
+
+        if clear_clicked:
+            _clear_fetched_row(index)
+            st.rerun()
+
+        if fetch_clicked:
+            patent_id = st.session_state.get("patent_id", "").strip()
+            pipeline_id = st.session_state.get(f"pipeline_id_{index}", "").strip()
+            if not patent_id:
+                st.error("Enter a Patent ID before fetching.")
+            elif not pipeline_id:
+                st.error(f"Model {index + 1}: enter a Pipeline ID before fetching.")
+            else:
+                try:
+                    with st.spinner(f"Fetching pipeline `{pipeline_id}` for `{patent_id}`..."):
+                        results = fetch_pipeline_artifacts(
+                            patent_id,
+                            pipeline_id,
+                            resolve_base=_resolve_base_for_ui,
+                        )
+                    for kind, result in results.items():
+                        if result.found and result.content is not None and result.filename:
+                            st.session_state[f"fetched_{kind}_{index}"] = (
+                                result.content,
+                                result.filename,
+                            )
+                        else:
+                            st.session_state.pop(f"fetched_{kind}_{index}", None)
+                    st.session_state[f"fetch_status_{index}"] = results
+                    found_count = sum(1 for r in results.values() if r.found)
+                    if found_count:
+                        st.success(
+                            f"Model {index + 1}: fetched {found_count}/{len(FILE_KINDS)} "
+                            f"artifact(s) for `{pipeline_id}`."
+                        )
+                    else:
+                        st.warning(
+                            f"Model {index + 1}: no artifacts found for `{patent_id}` / "
+                            f"`{pipeline_id}`."
+                        )
+                except (BlobConfigError, ValueError) as error:
+                    st.error(str(error))
+                except Exception as error:  # noqa: BLE001
+                    st.error(f"Blob fetch failed: {error}")
+
+        status = st.session_state.get(f"fetch_status_{index}")
+        status_text = _format_fetch_status(status)
+        if status_text:
+            st.caption(status_text)
+
+        label_col, *file_cols = st.columns([1.2, 1, 1, 1, 1, 1])
+        with label_col:
+            st.caption("Manual upload fallback")
         for kind, col in zip(FILE_KINDS, file_cols):
             with col:
+                fetched = st.session_state.get(f"fetched_{kind}_{index}")
+                label = FILE_KIND_LABELS[kind]
+                if fetched is not None:
+                    label = f"{label} (fetched)"
                 st.file_uploader(
-                    FILE_KIND_LABELS[kind],
+                    label,
                     type=["json"],
                     key=f"{kind}_file_{index}",
                 )
 
     st.subheader("Shared inputs")
-    md_label_col, md_file_col = st.columns([1, 2])
+    md_label_col, md_file_col, md_fetch_col, md_clear_col = st.columns(
+        [1.2, 2.2, 1.0, 1.0],
+        vertical_alignment="bottom",
+    )
     with md_label_col:
         st.text_input(
             "Markdown label",
@@ -874,6 +1031,60 @@ def main():
             type=["md", "txt", "markdown"],
             key="markdown_file",
         )
+    with md_fetch_col:
+        fetch_md_clicked = st.button(
+            "Fetch markdown",
+            key="fetch_markdown",
+            use_container_width=True,
+        )
+    with md_clear_col:
+        clear_md_clicked = False
+        if st.session_state.get("fetched_markdown") is not None:
+            clear_md_clicked = st.button(
+                "Clear markdown",
+                key="clear_fetched_markdown",
+                use_container_width=True,
+            )
+        if clear_md_clicked:
+            st.session_state.pop("fetched_markdown", None)
+            st.session_state.pop("fetched_markdown_status", None)
+            st.rerun()
+
+    if fetch_md_clicked:
+        patent_id = st.session_state.get("patent_id", "").strip()
+        if not patent_id:
+            st.error("Enter a Patent ID before fetching markdown.")
+        else:
+            try:
+                with st.spinner(f"Fetching markdown for `{patent_id}`..."):
+                    md_result = fetch_markdown(
+                        patent_id,
+                        resolve_base=_resolve_base_for_ui,
+                    )
+                st.session_state["fetched_markdown_status"] = md_result
+                if md_result.found and md_result.content is not None and md_result.filename:
+                    st.session_state["fetched_markdown"] = (
+                        md_result.content,
+                        md_result.filename,
+                    )
+                    st.success(f"Fetched markdown `{md_result.blob_path}`.")
+                else:
+                    st.session_state.pop("fetched_markdown", None)
+                    detail = md_result.error or "not found"
+                    st.warning(f"Markdown {detail}.")
+            except (BlobConfigError, ValueError) as error:
+                st.error(str(error))
+            except Exception as error:  # noqa: BLE001
+                st.error(f"Markdown fetch failed: {error}")
+
+    md_status = st.session_state.get("fetched_markdown_status")
+    if isinstance(md_status, FetchResult):
+        if md_status.found and md_status.blob_path:
+            st.caption(f"Markdown ✓ `{md_status.blob_path}`")
+        elif md_status.error:
+            st.caption(f"Markdown ✗ {md_status.error}")
+        elif md_status.blob_path:
+            st.caption(f"Markdown ✗ not found at `{md_status.blob_path}`")
 
     rows = _collect_model_rows(num_models)
     all_labels = [row.label for row in rows]
@@ -895,7 +1106,11 @@ def main():
     can_run = bool(rows) and baseline is not None and not duplicate_labels
     run_clicked = st.button("Run Benchmarks", type="primary", disabled=not can_run)
 
-    markdown_bytes = markdown_file.getvalue() if markdown_file else None
+    fetched_md = st.session_state.get("fetched_markdown")
+    if fetched_md is not None:
+        markdown_bytes = fetched_md[0]
+    else:
+        markdown_bytes = markdown_file.getvalue() if markdown_file else None
     signature = _input_signature(rows, baseline, markdown_bytes) if can_run else None
 
     if "benchmark_active" not in st.session_state:
@@ -915,13 +1130,13 @@ def main():
     ):
         st.session_state.benchmark_active = False
         st.warning(
-            "Uploads, labels, baseline, or markdown changed since the last run. "
+            "Uploads, fetched files, labels, baseline, or markdown changed since the last run. "
             "Click **Run Benchmarks** again."
         )
 
     if not st.session_state.benchmark_active:
         st.info(
-            "Upload at least one file per model you want to compare, choose a baseline, "
+            "Fetch or upload at least one file per model you want to compare, choose a baseline, "
             "then click **Run Benchmarks**. Sections with fewer than two relevant files "
             "are skipped automatically. Threshold sliders keep results visible after a run."
         )

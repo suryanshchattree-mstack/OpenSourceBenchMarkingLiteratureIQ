@@ -1,6 +1,6 @@
 # Multi-model Benchmark Streamlit App
 
-Single-screen tool to compare N labeled model runs across five optional output kinds (pre-pass, M1, M2, R1 step boundaries, reactions). Upload a matrix of files, pick one shared baseline, click **Run Benchmarks** — each section runs independently and skips with a notice when it lacks enough uploads.
+Single-screen tool to compare N labeled model runs across five optional output kinds (pre-pass, M1, M2, R1 step boundaries, reactions). Fetch artifacts from Azure Blob by Patent ID + Pipeline ID, or upload files manually, pick one shared baseline, click **Run Benchmarks** — each section runs independently and skips with a notice when it lacks enough inputs.
 
 ## Requirements
 
@@ -8,6 +8,7 @@ Single-screen tool to compare N labeled model runs across five optional output k
 - macOS Apple Silicon (MPS) recommended — falls back to CPU if MPS unavailable
 - ~4 GB free RAM for loading three embedding models (used by pre-pass and R1)
 - `rdkit` (reactions SMILES axis) and `upsetplot` (M1/M2 overlap plots)
+- Optional: Azure Storage connection string for blob fetch (manual upload still works without it)
 
 ## Setup
 
@@ -19,6 +20,17 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
+
+### Azure Blob (optional)
+
+Copy `.env.example` to `.env` and set:
+
+```bash
+AZURE_STORAGE_CONNECTION_STRING=...   # full connection string (or SAS-backed equivalent)
+AZURE_STORAGE_CONTAINER=datalake-raw-store
+```
+
+Without `.env`, the app stays upload-only. With it, each model row can **Fetch from blob** using the shared Patent ID and that row's Pipeline ID.
 
 First pre-pass/R1 run downloads three Hugging Face models (~3 GB total, cached locally afterward):
 
@@ -33,6 +45,29 @@ streamlit run app.py
 ```
 
 Opens at http://localhost:8501 — one page, no sidebar multi-page nav.
+
+### Blob fetch workflow
+
+1. Enter a **Patent ID** (e.g. `CN105884573B`).
+2. Per model row: set **Label**, **Pipeline ID** (defaults: `section-wise-v1` / `section-wise-v1-deepseek-flash`), click **Fetch from blob**.
+3. Optionally click **Fetch markdown** for the shared enriched markdown.
+4. Status captions show which kinds were found (and blob path) vs missing.
+5. **Clear fetched** (or **Clear markdown**) drops session-fetched bytes and falls back to manual uploaders.
+6. Fetched bytes take priority over uploads for the same slot when running benchmarks.
+
+Blob layout (mirrors literatureiq-engine):
+
+```
+literature/patents/{countryCode}/{hashBucket}/{uuid5}/
+  enriched/en/markdown.md          # preferred; falls back to en/markdown.md
+  reactions.json                   # baseline pipeline section-wise-v1
+  extraction/{pipelineId}/
+    pre-pass-{timestamp}.json      # latest by prefix
+    molecule-pass-1-consolidated.json
+    molecule-pass-2-consolidated.json
+    reaction-pass-1-consolidated.json
+    reactions.json                 # non-baseline pipelines
+```
 
 ### Upload matrix
 
@@ -79,8 +114,11 @@ prepass-benchmark/
 ├── compound_compare_cli.py     # M2 diff CLI
 ├── compare_cli.py              # Pre-pass CLI
 ├── requirements.txt
+├── .env.example                # Azure connection string + container
 ├── README.md
 └── core/
+    ├── blob_paths.py           # Patent → blob path builders (no network)
+    ├── blob_client.py          # Azure fetch orchestration
     ├── parsing.py              # Pre-pass JSON + markdown
     ├── r1_parsing.py           # R1 → Section adapter
     ├── line_arrays.py          # per-line type/label painting
@@ -94,6 +132,7 @@ prepass-benchmark/
 
 ## Notes
 
-- Fully standalone — no connection to `literatureiq-engine`, Azure, or any database.
+- Blob fetch is optional — without `.env` / credentials, use manual uploads as before.
+- If murmur3 hash-bucket disagrees with production, the client brute-forces all 128 buckets for that country code once per patent (cached in session).
 - Pre-pass/R1 threshold slider re-runs only flagging; embeddings are cached.
 - Scores weight each line equally; longer sections contribute more to averages.
