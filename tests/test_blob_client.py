@@ -131,8 +131,8 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(results["reactions"].content, b'{"reactions": true}')
         self.assertEqual(results["reactions"].blob_path, reactions)
 
-    def test_fetch_reactions_falls_back_to_baseline_top_level(self) -> None:
-        # Non-baseline pipeline: primary under extraction/, then top-level reactions.json
+    def test_fetch_reactions_does_not_use_baseline_top_level(self) -> None:
+        # Non-baseline: root reactions.json must not satisfy extraction/{id}/ path
         store = {f"{self.base}/reactions.json": b'[{"id": 1}]'}
         container = FakeContainer(store)
         results = fetch_pipeline_artifacts(
@@ -141,8 +141,7 @@ class BlobClientTest(unittest.TestCase):
             container=container,
             resolve_base=lambda _: self.base,
         )
-        self.assertTrue(results["reactions"].found)
-        self.assertEqual(results["reactions"].blob_path, f"{self.base}/reactions.json")
+        self.assertFalse(results["reactions"].found)
 
     def test_fetch_reactions_baseline_primary_path(self) -> None:
         store = {f"{self.base}/reactions.json": b'[{"id": 1}]'}
@@ -156,7 +155,7 @@ class BlobClientTest(unittest.TestCase):
         self.assertTrue(results["reactions"].found)
         self.assertEqual(results["reactions"].blob_path, f"{self.base}/reactions.json")
 
-    def test_fetch_reactions_legacy_persistent_store(self) -> None:
+    def test_fetch_reactions_ignores_legacy_persistent_store(self) -> None:
         legacy = f"persistent-store/{self.patent_id}/reactions.json"
         store = {legacy: b'[{"legacy": true}]'}
         container = FakeContainer(store)
@@ -166,10 +165,9 @@ class BlobClientTest(unittest.TestCase):
             container=container,
             resolve_base=lambda _: self.base,
         )
-        self.assertTrue(results["reactions"].found)
-        self.assertEqual(results["reactions"].blob_path, legacy)
+        self.assertFalse(results["reactions"].found)
 
-    def test_fetch_compounds_legacy_persistent_store(self) -> None:
+    def test_fetch_compounds_ignores_legacy_persistent_store(self) -> None:
         legacy = f"persistent-store/{self.patent_id}/compounds.json"
         store = {legacy: b'[{"legacy": true}]'}
         container = FakeContainer(store)
@@ -179,8 +177,7 @@ class BlobClientTest(unittest.TestCase):
             container=container,
             resolve_base=lambda _: self.base,
         )
-        self.assertTrue(results["compounds"].found)
-        self.assertEqual(results["compounds"].blob_path, legacy)
+        self.assertFalse(results["compounds"].found)
 
     def test_fetch_compounds_baseline_primary_path(self) -> None:
         store = {f"{self.base}/compounds.json": b'[{"id": 1}]'}

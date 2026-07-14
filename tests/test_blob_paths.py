@@ -97,24 +97,14 @@ class BlobPathsTest(unittest.TestCase):
         baseline_fallbacks = compounds_fallback_paths(
             base, patent_id, BASELINE_PIPELINE_ID
         )
-        self.assertEqual(
-            baseline_fallbacks,
-            [
-                f"{base}/compounds.json",
-                f"{base}/extraction/{BASELINE_PIPELINE_ID}/compounds.json",
-                f"persistent-store/{patent_id}/compounds.json",
-            ],
-        )
+        self.assertEqual(baseline_fallbacks, [f"{base}/compounds.json"])
         other = "section-wise-v1-deepseek-flash"
         other_fallbacks = compounds_fallback_paths(base, patent_id, other)
         self.assertEqual(
             other_fallbacks,
-            [
-                f"{base}/extraction/{other}/compounds.json",
-                f"{base}/compounds.json",
-                f"persistent-store/{patent_id}/compounds.json",
-            ],
+            [f"{base}/extraction/{other}/compounds.json"],
         )
+        self.assertNotIn(f"{base}/compounds.json", other_fallbacks)
 
     def test_reactions_path_baseline_vs_other(self) -> None:
         base = "literature/patents/CN/99/abc"
@@ -134,24 +124,14 @@ class BlobPathsTest(unittest.TestCase):
         baseline_fallbacks = reactions_fallback_paths(
             base, patent_id, BASELINE_PIPELINE_ID
         )
-        self.assertEqual(
-            baseline_fallbacks,
-            [
-                f"{base}/reactions.json",
-                f"{base}/extraction/{BASELINE_PIPELINE_ID}/reactions.json",
-                f"persistent-store/{patent_id}/reactions.json",
-            ],
-        )
+        self.assertEqual(baseline_fallbacks, [f"{base}/reactions.json"])
         other = "section-wise-v1-deepseek-flash"
         other_fallbacks = reactions_fallback_paths(base, patent_id, other)
         self.assertEqual(
             other_fallbacks,
-            [
-                f"{base}/extraction/{other}/reactions.json",
-                f"{base}/reactions.json",
-                f"persistent-store/{patent_id}/reactions.json",
-            ],
+            [f"{base}/extraction/{other}/reactions.json"],
         )
+        self.assertNotIn(f"{base}/reactions.json", other_fallbacks)
 
     def test_markdown_paths(self) -> None:
         base = "literature/patents/CN/99/abc"

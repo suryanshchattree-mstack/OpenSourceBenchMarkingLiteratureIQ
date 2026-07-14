@@ -60,16 +60,16 @@ Blob layout (mirrors literatureiq-engine):
 ```
 literature/patents/{countryCode}/{hashBucket}/{uuid5}/
   enriched/en/markdown.md          # preferred; falls back to en/markdown.md
-  compounds.json                   # baseline pipeline section-wise-v1
-  reactions.json                   # baseline pipeline section-wise-v1
+  compounds.json                   # section-wise-v1 only (no fallback for other pipelines)
+  reactions.json                   # section-wise-v1 only (no fallback for other pipelines)
   extraction/{pipelineId}/
     pre-pass-{timestamp}.json      # latest by prefix
     reaction-pass-1-consolidated.json
-    compounds.json                 # non-baseline pipelines
-    reactions.json                 # non-baseline pipelines
+    compounds.json                 # non-baseline pipelines only
+    reactions.json                 # non-baseline pipelines only
 ```
 
-Legacy fallback (tried last for compounds/reactions): `persistent-store/{patentId}/compounds.json` and `…/reactions.json`.
+Root `compounds.json` / `reactions.json` are used only for `section-wise-v1`. Other pipeline IDs resolve solely under `extraction/{pipelineId}/` — no root or `persistent-store` fallback.
 
 ### Upload matrix
 

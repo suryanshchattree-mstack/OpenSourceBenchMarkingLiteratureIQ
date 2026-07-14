@@ -70,24 +70,15 @@ def compounds_path(base: str, pipeline_id: str) -> str:
 
 def compounds_fallback_paths(base: str, patent_id: str, pipeline_id: str) -> list[str]:
     """
-    Ordered candidate paths for compounds.json.
+    Candidate path(s) for compounds.json.
 
-    Primary path first, then the other layout (baseline vs pipeline), then legacy
-    ``persistent-store/{patentId}/compounds.json``.
+    Root ``{base}/compounds.json`` is baseline-only; other pipelines use only
+    ``{base}/extraction/{pipelineId}/compounds.json``. No cross-layout or
+    ``persistent-store`` fallback. ``patent_id`` is unused (kept for call-site
+    compatibility).
     """
-    primary = compounds_path(base, pipeline_id)
-    candidates = [primary]
-    alt = (
-        f"{base}/extraction/{pipeline_id}/compounds.json"
-        if pipeline_id == BASELINE_PIPELINE_ID
-        else f"{base}/compounds.json"
-    )
-    if alt not in candidates:
-        candidates.append(alt)
-    legacy = f"persistent-store/{patent_id}/compounds.json"
-    if legacy not in candidates:
-        candidates.append(legacy)
-    return candidates
+    _ = patent_id
+    return [compounds_path(base, pipeline_id)]
 
 
 def reactions_path(base: str, pipeline_id: str) -> str:
@@ -102,23 +93,15 @@ def reactions_path(base: str, pipeline_id: str) -> str:
 
 def reactions_fallback_paths(base: str, patent_id: str, pipeline_id: str) -> list[str]:
     """
-    Ordered candidate paths for reactions.json.
+    Candidate path(s) for reactions.json.
 
-    Primary path first, then the other layout (baseline vs pipeline), then legacy
-    ``persistent-store/{patentId}/reactions.json``.
+    Root ``{base}/reactions.json`` is baseline-only; other pipelines use only
+    ``{base}/extraction/{pipelineId}/reactions.json``. No cross-layout or
+    ``persistent-store`` fallback. ``patent_id`` is unused (kept for call-site
+    compatibility).
     """
-    primary = reactions_path(base, pipeline_id)
-    candidates = [primary]
-    if pipeline_id == BASELINE_PIPELINE_ID:
-        alt = f"{base}/extraction/{pipeline_id}/reactions.json"
-    else:
-        alt = f"{base}/reactions.json"
-    if alt not in candidates:
-        candidates.append(alt)
-    legacy = f"persistent-store/{patent_id}/reactions.json"
-    if legacy not in candidates:
-        candidates.append(legacy)
-    return candidates
+    _ = patent_id
+    return [reactions_path(base, pipeline_id)]
 
 
 def markdown_paths(base: str) -> list[str]:
