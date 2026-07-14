@@ -6,8 +6,41 @@ from typing import Any
 
 import pandas as pd
 
-from core.compound_matching import CompoundDiffResult, NWayDiffResult, canonicalize_name
+from core.compound_matching import (
+    CompoundDiffResult,
+    NWayCluster,
+    NWayDiffResult,
+    canonicalize_name,
+)
 from core.compound_parsing import CompoundEntry
+
+
+def cluster_display_label(cluster: NWayCluster, preferred_label: str) -> str:
+    """Preferred model's identifier if present, else alphabetically-first model's."""
+    if preferred_label in cluster.representatives:
+        return cluster.representatives[preferred_label].identifier
+    if not cluster.representatives:
+        return "(empty)"
+    first_label = min(cluster.representatives.keys())
+    return cluster.representatives[first_label].identifier
+
+
+def clusters_sorted_by_consensus(nway_result: NWayDiffResult) -> list[NWayCluster]:
+    """
+    Clusters ordered by membership size descending, then by canonical name.
+
+    Tie-break uses the alphabetically-first canonicalized representative
+    identifier in the cluster (same spirit as ``nway_clusters_dataframe``).
+    """
+
+    def sort_key(cluster: NWayCluster) -> tuple[int, str]:
+        names = [
+            canonicalize_name(entry.identifier) or ""
+            for entry in cluster.representatives.values()
+        ]
+        return (-len(cluster.membership), min(names) if names else "")
+
+    return sorted(nway_result.clusters, key=sort_key)
 
 
 def _format_aliases(aliases: tuple[str, ...]) -> str:

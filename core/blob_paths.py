@@ -54,16 +54,40 @@ def prepass_prefix(base: str, pipeline_id: str) -> str:
     return f"{base}/extraction/{pipeline_id}/pre-pass-"
 
 
-def m1_path(base: str, pipeline_id: str) -> str:
-    return f"{base}/extraction/{pipeline_id}/molecule-pass-1-consolidated.json"
-
-
-def m2_path(base: str, pipeline_id: str) -> str:
-    return f"{base}/extraction/{pipeline_id}/molecule-pass-2-consolidated.json"
-
-
 def r1_path(base: str, pipeline_id: str) -> str:
     return f"{base}/extraction/{pipeline_id}/reaction-pass-1-consolidated.json"
+
+
+def compounds_path(base: str, pipeline_id: str) -> str:
+    """
+    Baseline ``section-wise-v1`` stores compounds at ``{base}/compounds.json``.
+    Other pipelines store under ``{base}/extraction/{pipelineId}/compounds.json``.
+    """
+    if pipeline_id == BASELINE_PIPELINE_ID:
+        return f"{base}/compounds.json"
+    return f"{base}/extraction/{pipeline_id}/compounds.json"
+
+
+def compounds_fallback_paths(base: str, patent_id: str, pipeline_id: str) -> list[str]:
+    """
+    Ordered candidate paths for compounds.json.
+
+    Primary path first, then the other layout (baseline vs pipeline), then legacy
+    ``persistent-store/{patentId}/compounds.json``.
+    """
+    primary = compounds_path(base, pipeline_id)
+    candidates = [primary]
+    alt = (
+        f"{base}/extraction/{pipeline_id}/compounds.json"
+        if pipeline_id == BASELINE_PIPELINE_ID
+        else f"{base}/compounds.json"
+    )
+    if alt not in candidates:
+        candidates.append(alt)
+    legacy = f"persistent-store/{patent_id}/compounds.json"
+    if legacy not in candidates:
+        candidates.append(legacy)
+    return candidates
 
 
 def reactions_path(base: str, pipeline_id: str) -> str:

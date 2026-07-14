@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,10 @@ class CompoundEntry:
     unresolved_reference: bool
     section_label: str | None
     role: str | None
+    smiles: str | None = None
+    inchi_key: str | None = None
+    molecular_formula: str | None = None
+    raw: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _decode_text(raw: str | bytes) -> str:
@@ -28,6 +32,14 @@ def _aliases_from_value(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
     return tuple(str(alias).strip() for alias in value if alias is not None and str(alias).strip())
+
+
+def _optional_str(item: dict[str, Any], key: str) -> str | None:
+    value = item.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _entry_from_dict(item: dict[str, Any]) -> CompoundEntry | None:
@@ -50,6 +62,10 @@ def _entry_from_dict(item: dict[str, Any]) -> CompoundEntry | None:
             if item.get("role") is not None and str(item.get("role")).strip()
             else None
         ),
+        smiles=_optional_str(item, "smiles"),
+        inchi_key=_optional_str(item, "inchi_key"),
+        molecular_formula=_optional_str(item, "molecular_formula"),
+        raw=dict(item),
     )
 
 

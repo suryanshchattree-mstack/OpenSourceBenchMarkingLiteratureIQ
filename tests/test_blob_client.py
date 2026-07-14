@@ -15,7 +15,7 @@ from core.blob_client import (
 from core.blob_paths import (
     BASELINE_PIPELINE_ID,
     base_path,
-    m1_path,
+    compounds_path,
     reactions_path,
     uuid5_name,
 )
@@ -97,12 +97,12 @@ class BlobClientTest(unittest.TestCase):
 
     def test_fetch_pipeline_artifacts_latest_prepass_and_missing_kinds(self) -> None:
         prefix = f"{self.base}/extraction/{self.pipeline_id}/pre-pass-"
-        m1 = m1_path(self.base, self.pipeline_id)
+        compounds = compounds_path(self.base, self.pipeline_id)
         reactions = reactions_path(self.base, self.pipeline_id)
         store = {
             f"{prefix}20240101T000000Z.json": b'[{"old": true}]',
             f"{prefix}20240615T120000Z.json": b'[{"new": true}]',
-            m1: b'{"m1": true}',
+            compounds: b'{"compounds": true}',
             reactions: b'{"reactions": true}',
         }
         container = FakeContainer(store)
@@ -121,10 +121,10 @@ class BlobClientTest(unittest.TestCase):
         )
         self.assertEqual(results["prepass"].filename, "pre-pass-20240615T120000Z.json")
 
-        self.assertTrue(results["m1"].found)
-        self.assertEqual(results["m1"].content, b'{"m1": true}')
+        self.assertTrue(results["compounds"].found)
+        self.assertEqual(results["compounds"].content, b'{"compounds": true}')
+        self.assertEqual(results["compounds"].blob_path, compounds)
 
-        self.assertFalse(results["m2"].found)
         self.assertFalse(results["r1"].found)
 
         self.assertTrue(results["reactions"].found)
@@ -169,6 +169,31 @@ class BlobClientTest(unittest.TestCase):
         self.assertTrue(results["reactions"].found)
         self.assertEqual(results["reactions"].blob_path, legacy)
 
+    def test_fetch_compounds_legacy_persistent_store(self) -> None:
+        legacy = f"persistent-store/{self.patent_id}/compounds.json"
+        store = {legacy: b'[{"legacy": true}]'}
+        container = FakeContainer(store)
+        results = fetch_pipeline_artifacts(
+            self.patent_id,
+            self.pipeline_id,
+            container=container,
+            resolve_base=lambda _: self.base,
+        )
+        self.assertTrue(results["compounds"].found)
+        self.assertEqual(results["compounds"].blob_path, legacy)
+
+    def test_fetch_compounds_baseline_primary_path(self) -> None:
+        store = {f"{self.base}/compounds.json": b'[{"id": 1}]'}
+        container = FakeContainer(store)
+        results = fetch_pipeline_artifacts(
+            self.patent_id,
+            BASELINE_PIPELINE_ID,
+            container=container,
+            resolve_base=lambda _: self.base,
+        )
+        self.assertTrue(results["compounds"].found)
+        self.assertEqual(results["compounds"].blob_path, f"{self.base}/compounds.json")
+
     def test_fetch_markdown_prefers_enriched(self) -> None:
         enriched = f"{self.base}/enriched/en/markdown.md"
         legacy = f"{self.base}/en/markdown.md"
@@ -206,7 +231,7 @@ class BlobClientTest(unittest.TestCase):
             container=container,
             resolve_base=lambda _: self.base,
         )
-        self.assertEqual(set(results), {"prepass", "m1", "m2", "r1", "reactions"})
+        self.assertEqual(set(results), {"prepass", "compounds", "r1", "reactions"})
         for result in results.values():
             self.assertIsInstance(result, FetchResult)
             self.assertFalse(result.found)

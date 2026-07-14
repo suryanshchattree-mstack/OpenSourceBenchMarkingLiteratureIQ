@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -17,33 +19,27 @@ from core.blob_client import (
     fetch_pipeline_artifacts,
     resolve_base_path,
 )
-from core.compound_matching import diff_compounds_nway
+from core.compound_baseline import (
+    NONE_SENTINEL,
+    compute_cluster_baselines,
+    field_value_options,
+)
+from core.compound_colors import color_for_value, css_cell
+from core.compound_grid import COMPOUND_GRID_FIELDS, drop_compound_rows
+from core.compound_matching import diff_compounds_nway, format_match_tier
 from core.compound_parsing import parse_compounds_json
-from core.compound_report import (
-    build_upset_memberships,
-    entries_to_dataframe,
-    identifier_type_counts,
-    nway_clusters_dataframe,
-    nway_label_counts_dataframe,
-    nway_pairwise_summary_dataframe,
+from core.compound_pdf import build_compounds_pdf_report
+from core.compound_report import build_upset_memberships, cluster_display_label, clusters_sorted_by_consensus
+from core.compound_stats import (
+    compute_field_accuracy,
+    compute_presence_stats,
+    filter_by_presence_baseline,
+    rank_models,
+    seed_view_dataframe,
 )
 from core.embeddings import MODEL_NAMES, compute_vs_reference_similarities, load_models, resolve_device
 from core.flagging import build_disagree_mask, collapse_flag_regions
 from core.line_arrays import build_line_arrays
-from core.m1_agreement import (
-    FIELD_FILTER_OPTIONS,
-    ClusterAgreementRow,
-    compute_m1_agreement,
-    filter_cluster_rows,
-)
-from core.m1_consensus import (
-    CHART_PATTERNS,
-    CONSENSUS_FIELDS,
-    compute_cluster_consensus,
-    consensus_rows_to_dataframe,
-)
-from core.m1_parsing import QUANTITY_FIELDS, parse_m1_json
-from core.m1_visuals import build_agreement_heatmap, build_consensus_chart
 from core.models import PrepassRun
 from core.parsing import parse_prepass_json, total_lines_from_markdown, type_distribution
 from core.r1_parsing import parse_r1_json
@@ -62,13 +58,19 @@ import matplotlib.pyplot as plt
 
 load_dotenv()
 
-DEFAULT_RUN_LABELS = ["Claude", "DeepSeek"]
+DEFAULT_RUN_LABELS = [
+    "Claude",
+    "DeepSeekFlash",
+    "GLM",
+    "DeepSeekPro",
+    "Kimi",
+    "MiniMax",
+]
 
-FILE_KINDS = ("prepass", "m1", "m2", "r1", "reactions")
+FILE_KINDS = ("prepass", "compounds", "r1", "reactions")
 FILE_KIND_LABELS = {
     "prepass": "Pre-pass JSON",
-    "m1": "M1 JSON",
-    "m2": "M2 JSON",
+    "compounds": "Compounds JSON",
     "r1": "R1 JSON",
     "reactions": "Reactions JSON",
 }
@@ -103,18 +105,6 @@ def _format_rate(value: float | None) -> str:
         return "—"
     return f"{value:.1%}"
 
-
-def _format_aliases(aliases: tuple[str, ...]) -> str:
-    return ", ".join(aliases) if aliases else "—"
-
-
-def _format_quantity(quantity: dict[str, float | None] | Mapping[str, float | None]) -> str:
-    parts = []
-    for field in QUANTITY_FIELDS:
-        value = quantity.get(field)
-        if value is not None:
-            parts.append(f"{field}={value}")
-    return ", ".join(parts) if parts else "—"
 
 
 def _show_upset(memberships: list[frozenset[str]], *, key: str) -> None:
@@ -557,310 +547,265 @@ def render_r1_section(
     )
 
 
-def _render_m1_disagreement_browser(agreement) -> None:
-    """Filterable disagreement-first drill-down for matched M1 clusters."""
-    cluster_rows: list[ClusterAgreementRow] = agreement.cluster_rows
-    st.subheader("Field disagreement browser")
-    if not cluster_rows:
-        st.info("No shared clusters with the baseline.")
+
+def _compounds_editor_signature(rows: list[ModelUploads], patent_id: str) -> str:
+    """Stable key fragment so data_editor edits reset when inputs change."""
+    payloads = _payloads_for_kind(rows, "compounds")
+    parts = [
+        patent_id.strip(),
+        *(f"{label}:{_file_hash(raw)}" for label, raw, _ in sorted(payloads, key=lambda item: item[0])),
+    ]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    return digest
+
+
+def _panel_height(row_count: int) -> int:
+    return 35 * (row_count + 1) + 3
+
+
+def _is_bool_like(value: object) -> bool:
+    if isinstance(value, bool):
+        return True
+    type_name = type(value).__name__
+    return type_name in {"bool_", "bool8"}
+
+
+def _style_presence_values(df: pd.DataFrame, model_labels: list[str]):
+    """Value-stable Presence colors: True/present=green, False/absent=red."""
+
+    value_cols = ["Baseline", *model_labels]
+    present_style = css_cell("#c6f6c6")
+    absent_style = css_cell("#f8c6c6")
+
+    def _style_row(row: pd.Series) -> list[str]:
+        styles = [""] * len(row)
+        for col in value_cols:
+            if col not in row.index:
+                continue
+            idx = int(row.index.get_loc(col))
+            value = row[col]
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                continue
+            if _is_bool_like(value):
+                styles[idx] = present_style if bool(value) else absent_style
+        return styles
+
+    return df.style.apply(_style_row, axis=1)
+
+
+def _style_categorical_values(df: pd.DataFrame, model_labels: list[str]):
+    """Color every model column and Baseline by the cell's own value (stable pastel)."""
+
+    value_cols = ["Baseline", *model_labels]
+
+    def _style_row(row: pd.Series) -> list[str]:
+        styles = [""] * len(row)
+        for col in value_cols:
+            if col not in row.index:
+                continue
+            idx = int(row.index.get_loc(col))
+            styles[idx] = css_cell(color_for_value(row[col]))
+        return styles
+
+    return df.style.apply(_style_row, axis=1)
+
+
+def _editor_seed_key(field: str, signature: str) -> str:
+    return f"compounds_{field}_seed_{signature}"
+
+
+def _editor_widget_key(field: str, signature: str) -> str:
+    return f"compounds_{field}_editor_{signature}"
+
+
+def _editor_current_key(field: str, signature: str) -> str:
+    return f"compounds_{field}_current_{signature}"
+
+
+def _delete_compounds(signature: str, names: list[str]) -> None:
+    """Remove matching Compound rows from seed slots and clear widget edit-state."""
+    for field in COMPOUND_GRID_FIELDS:
+        seed_key = _editor_seed_key(field, signature)
+        if seed_key not in st.session_state:
+            continue
+        st.session_state[seed_key] = drop_compound_rows(
+            st.session_state[seed_key], names
+        )
+        st.session_state.pop(_editor_widget_key(field, signature), None)
+        st.session_state.pop(_editor_current_key(field, signature), None)
+
+
+def _render_compound_delete_controls(signature: str) -> None:
+    """Explicit multi-select delete that keeps the three compound grids aligned."""
+    presence_df = st.session_state.get(_editor_current_key("presence", signature))
+    if not isinstance(presence_df, pd.DataFrame):
+        presence_df = st.session_state.get(_editor_seed_key("presence", signature))
+    if not isinstance(presence_df, pd.DataFrame) or presence_df.empty:
         return
-
-    model_options = sorted({row.model_label for row in cluster_rows})
-    total_disagreements = sum(1 for row in cluster_rows if row.has_disagreement)
-    total_agreements = len(cluster_rows) - total_disagreements
-
-    filter_cols = st.columns([1.4, 1.4, 1.6, 1.0])
-    with filter_cols[0]:
-        selected_models = st.multiselect(
-            "Models",
-            options=model_options,
-            default=model_options,
-            key="m1_disagreement_models",
-        )
-    with filter_cols[1]:
-        field_filter = st.selectbox(
-            "Field filter",
-            options=list(FIELD_FILTER_OPTIONS),
-            index=0,
-            key="m1_disagreement_field",
-        )
-    with filter_cols[2]:
-        identifier_query = st.text_input(
-            "Identifier search",
-            value="",
-            key="m1_disagreement_query",
-            placeholder="Search baseline or model identifier",
-        )
-    with filter_cols[3]:
-        disagreements_only = st.checkbox(
-            "Disagreements only",
-            value=True,
-            key="m1_disagreement_only",
-        )
-
-    filtered = filter_cluster_rows(
-        cluster_rows,
-        model_labels=selected_models,
-        field_filter=field_filter,
-        identifier_query=identifier_query,
-        disagreements_only=disagreements_only,
-    )
-    hidden = total_agreements if disagreements_only else 0
-    st.caption(
-        f"Showing {len(filtered)} row(s)"
-        + (f"; {hidden} fully agreeing pairs hidden." if disagreements_only else ".")
-        + f" Total matched pairs: {len(cluster_rows)} "
-        f"({total_disagreements} with ≥1 disagreement)."
-    )
-
-    if not filtered:
-        st.success("No rows match the current filters.")
+    options = [
+        str(value).strip()
+        for value in presence_df.get("Compound", pd.Series(dtype=str)).tolist()
+        if value is not None and str(value).strip()
+    ]
+    if not options:
         return
+    st.markdown("#### Delete compounds")
+    selected = st.multiselect(
+        "Rows to delete",
+        options=options,
+        key=f"compounds_delete_select_{signature}",
+        help="Removes the selected compounds from Presence, Role, and Identifier-type.",
+    )
+    if st.button("Delete selected rows", key=f"compounds_delete_btn_{signature}"):
+        if selected:
+            _delete_compounds(signature, selected)
+            st.rerun()
+        else:
+            st.warning("Select at least one compound to delete.")
 
-    table_rows = []
-    for row in filtered:
-        table_rows.append(
-            {
-                "model": row.model_label,
-                "baseline_id": row.baseline_identifier,
-                "model_id": row.model_identifier,
-                "failed_fields": ", ".join(row.failed_fields) if row.failed_fields else "—",
-                "alias_jaccard": round(row.alias_jaccard, 3),
-            }
-        )
-    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("**Pair details**")
-    for index, row in enumerate(filtered):
-        title = (
-            f"{row.model_label}: {row.baseline_identifier} ↔ {row.model_identifier}"
-            + (f" [{', '.join(row.failed_fields)}]" if row.failed_fields else " [agree]")
+def _seed_editor_df(
+    *,
+    field: str,
+    signature: str,
+    clusters: list,
+    model_labels: list[str],
+    defaults: dict,
+    preferred: str,
+) -> pd.DataFrame:
+    seed_key = _editor_seed_key(field, signature)
+    if seed_key not in st.session_state:
+        st.session_state[seed_key] = seed_view_dataframe(
+            clusters,
+            model_labels,
+            field,
+            defaults=defaults,
+            preferred_label=preferred,
         )
-        with st.expander(title, expanded=False):
-            detail = pd.DataFrame(
-                [
-                    {
-                        "field": "identifier",
-                        "baseline": row.baseline_identifier,
-                        "model": row.model_identifier,
-                        "agree": row.baseline_identifier == row.model_identifier,
-                    },
-                    {
-                        "field": "identifier_type",
-                        "baseline": row.baseline_identifier_type,
-                        "model": row.model_identifier_type,
-                        "agree": row.identifier_type_agree,
-                    },
-                    {
-                        "field": "role",
-                        "baseline": row.baseline_role or "—",
-                        "model": row.model_role or "—",
-                        "agree": row.role_agree,
-                    },
-                    {
-                        "field": "is_section_product",
-                        "baseline": row.baseline_is_section_product,
-                        "model": row.model_is_section_product,
-                        "agree": row.is_section_product_agree,
-                    },
-                    {
-                        "field": "aliases",
-                        "baseline": _format_aliases(row.baseline_aliases),
-                        "model": _format_aliases(row.model_aliases),
-                        "agree": "aliases" not in row.failed_fields,
-                    },
-                    {
-                        "field": "alias_jaccard",
-                        "baseline": round(row.alias_jaccard, 3),
-                        "model": round(row.alias_jaccard, 3),
-                        "agree": "aliases" not in row.failed_fields,
-                    },
-                    {
-                        "field": "quantity",
-                        "baseline": _format_quantity(dict(row.baseline_quantity)),
-                        "model": _format_quantity(dict(row.model_quantity)),
-                        "agree": all(row.quantity_field_agree.values()),
-                    },
-                ]
+    return st.session_state[seed_key]
+
+
+def _render_editable_view(
+    *,
+    title: str,
+    field: str,
+    signature: str,
+    clusters: list,
+    model_labels: list[str],
+    defaults: dict,
+    preferred: str,
+    select_options: list[str] | None = None,
+) -> pd.DataFrame:
+    st.subheader(title)
+    seed_key = _editor_seed_key(field, signature)
+    widget_key = _editor_widget_key(field, signature)
+    current_key = _editor_current_key(field, signature)
+    _seed_editor_df(
+        field=field,
+        signature=signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+    )
+
+    column_config: dict[str, Any] = {
+        "Compound": st.column_config.TextColumn("Compound", required=True),
+        "Match tier": st.column_config.TextColumn("Match tier"),
+    }
+    if field == "presence":
+        column_config["Baseline"] = st.column_config.CheckboxColumn("Baseline")
+        for label in model_labels:
+            column_config[label] = st.column_config.CheckboxColumn(label)
+    else:
+        options = select_options or [NONE_SENTINEL]
+        column_config["Baseline"] = st.column_config.SelectboxColumn(
+            "Baseline", options=options
+        )
+        for label in model_labels:
+            column_config[label] = st.column_config.SelectboxColumn(
+                label, options=options
             )
-            st.dataframe(detail, use_container_width=True, hide_index=True)
-            qty_rows = []
-            for field in QUANTITY_FIELDS:
-                qty_rows.append(
-                    {
-                        "quantity_field": field,
-                        "baseline": row.baseline_quantity.get(field),
-                        "model": row.model_quantity.get(field),
-                        "presence_agree": row.quantity_field_agree.get(field, True),
-                    }
-                )
-            st.caption("Quantity presence agreement (null vs populated)")
-            st.dataframe(pd.DataFrame(qty_rows), use_container_width=True, hide_index=True)
-            _ = index
 
-
-def render_m1_section(rows: list[ModelUploads], baseline: str) -> None:
-    st.header("M1 — Molecule pass 1")
-    labels = _labels_with_file(rows, "m1")
-    if len(labels) < 2:
-        st.info(f"Skipped — need ≥ 2 M1 uploads, got {len(labels)}.")
-        return
-    if baseline not in labels:
-        st.info(
-            f"Skipped — baseline **{baseline}** has no M1 file. "
-            f"Uploads: {', '.join(labels)}."
+    left_col, right_col = st.columns([1, 1])
+    with right_col:
+        # Pass stable seed as data=; widget key= holds in-flight edits (do not
+        # feed the previous return value back into data=).
+        edited_df = st.data_editor(
+            st.session_state[seed_key],
+            key=widget_key,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            height=_panel_height(max(len(st.session_state[seed_key]), 1)),
         )
+        st.session_state[current_key] = edited_df
+        st.caption(
+            "Use **+** to add a row; use **Delete selected rows** below to remove "
+            "compounds from all three grids."
+        )
+    with left_col:
+        styler = (
+            _style_presence_values(edited_df, model_labels)
+            if field == "presence"
+            else _style_categorical_values(edited_df, model_labels)
+        )
+        st.dataframe(
+            styler,
+            use_container_width=True,
+            hide_index=True,
+            height=_panel_height(max(len(edited_df), 1)),
+        )
+    return edited_df
+
+
+def _render_compound_inspector_sidebar(
+    *,
+    signature: str,
+    presence_df: pd.DataFrame,
+    clusters: list,
+    preferred: str,
+) -> None:
+    cluster_by_display = {
+        cluster_display_label(cluster, preferred): cluster for cluster in clusters
+    }
+    compounds = [
+        str(value).strip()
+        for value in presence_df.get("Compound", pd.Series(dtype=str)).tolist()
+        if value is not None and str(value).strip()
+    ]
+    with st.sidebar:
+        st.subheader("Raw compound inspector")
+        if not compounds:
+            st.caption("No compounds to inspect.")
+            return
+        selected = st.selectbox(
+            "Inspect a compound",
+            options=compounds,
+            key=f"compound_inspect_{signature}",
+        )
+        selected_cluster = cluster_by_display.get(selected)
+        if selected_cluster is None:
+            st.caption("No raw data (manually added)")
+            return
+        st.caption(f"Matched via: `{format_match_tier(selected_cluster.match_tier)}`")
+        for label in sorted(selected_cluster.membership):
+            entry = selected_cluster.representatives[label]
+            with st.expander(f"{label} — {entry.identifier}"):
+                st.json(dict(entry.raw) if entry.raw else {"identifier": entry.identifier})
+
+
+def render_compounds_section(rows: list[ModelUploads], baseline: str) -> None:
+    st.header("Compounds")
+    labels = _labels_with_file(rows, "compounds")
+    if len(labels) < 2:
+        st.info(f"Skipped — need ≥ 2 compounds uploads, got {len(labels)}.")
         return
 
     try:
         entries_by_label = {}
-        for label, raw, filename in _payloads_for_kind(rows, "m1"):
-            entries_by_label[label] = parse_m1_json(
-                raw, source_label=f"{label} ({filename})"
-            )
-        agreement = compute_m1_agreement(entries_by_label, baseline)
-    except (ValueError, KeyError) as error:
-        st.error(str(error))
-        return
-
-    nway = agreement.nway
-    st.success(
-        f"M1 comparison complete — {len(nway.labels)} models, "
-        f"{len(nway.clusters)} compound clusters vs baseline **{baseline}**."
-    )
-    st.caption(
-        "`section_label` is usually deterministic from the document structure — "
-        "focus on identifier_type, role, aliases, and quantity field agreement."
-    )
-
-    summary_rows = []
-    for summary in agreement.summaries.values():
-        summary_rows.append(
-            {
-                "model": summary.label,
-                "common": summary.common,
-                "baseline_only": summary.baseline_only,
-                "model_only": summary.model_only,
-                "recall": _format_rate(summary.recall),
-                "precision": _format_rate(summary.precision),
-                "identifier_type": _format_rate(summary.identifier_type.rate),
-                "role": _format_rate(summary.role.rate),
-                "is_section_product": _format_rate(summary.is_section_product.rate),
-                "alias_jaccard": (
-                    "—"
-                    if summary.alias_jaccard_mean is None
-                    else round(summary.alias_jaccard_mean, 3)
-                ),
-                "quantity_presence": _format_rate(summary.quantity.overall_rate),
-            }
-        )
-    st.subheader(f"Agreement vs {baseline}")
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
-
-    st.subheader("Agreement heatmap")
-    st.plotly_chart(
-        build_agreement_heatmap(
-            agreement.summaries,
-            title=f"Field agreement vs {baseline}",
-        ),
-        use_container_width=True,
-    )
-
-    st.subheader("Cluster consensus (N-way, all models)")
-    st.caption(
-        "Looks across all uploaded models per cluster/field — flags cases where "
-        "≥2 non-baseline models agree with each other against the baseline. "
-        "Tables list **majority_supporters** and **not_in_majority** "
-        "(models whose value differs from the majority, including baseline)."
-    )
-    consensus_rows = compute_cluster_consensus(agreement.nway, baseline)
-    st.plotly_chart(build_consensus_chart(consensus_rows), use_container_width=True)
-
-    flagged = [row for row in consensus_rows if row.pattern == "majority_vs_baseline"]
-    st.metric("Clusters flagged (majority vs baseline)", len(flagged))
-    if flagged:
-        st.dataframe(
-            consensus_rows_to_dataframe(flagged, model_labels=nway.labels),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    field_options = list(CONSENSUS_FIELDS)
-    pattern_options = list(CHART_PATTERNS)
-    default_patterns = [
-        pattern
-        for pattern in ("majority_vs_baseline", "split")
-        if pattern in pattern_options
-    ]
-    filter_cols = st.columns(2)
-    with filter_cols[0]:
-        selected_fields = st.multiselect(
-            "Consensus fields",
-            options=field_options,
-            default=field_options,
-            key="m1_consensus_fields",
-        )
-    with filter_cols[1]:
-        selected_patterns = st.multiselect(
-            "Consensus patterns",
-            options=pattern_options,
-            default=default_patterns,
-            key="m1_consensus_patterns",
-        )
-
-    filtered_consensus = [
-        row
-        for row in consensus_rows
-        if row.pattern in CHART_PATTERNS
-        and row.field in selected_fields
-        and row.pattern in selected_patterns
-    ]
-    st.caption(
-        f"Showing {len(filtered_consensus)} consensus row(s) after filters "
-        f"(excluding single-model clusters)."
-    )
-    if filtered_consensus:
-        st.dataframe(
-            consensus_rows_to_dataframe(filtered_consensus, model_labels=nway.labels),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.success("No consensus rows match the current filters.")
-
-    st.subheader("Label counts")
-    st.dataframe(nway_label_counts_dataframe(nway), use_container_width=True, hide_index=True)
-
-    memberships = build_upset_memberships(nway)
-    st.subheader("UpSet — compound overlap")
-    _show_upset(memberships, key="m1_upset")
-
-    st.subheader("Multi-model clusters")
-    common_df = nway_clusters_dataframe(nway, min_labels=2)
-    if common_df.empty:
-        st.warning("No multi-model clusters.")
-    else:
-        st.dataframe(common_df, use_container_width=True, hide_index=True)
-
-    _render_m1_disagreement_browser(agreement)
-
-
-def render_m2_section(rows: list[ModelUploads], baseline: str) -> None:
-    st.header("M2 — Molecule pass 2")
-    labels = _labels_with_file(rows, "m2")
-    if len(labels) < 2:
-        st.info(f"Skipped — need ≥ 2 M2 uploads, got {len(labels)}.")
-        return
-    if baseline not in labels:
-        st.info(
-            f"Skipped — baseline **{baseline}** has no M2 file. "
-            f"Uploads: {', '.join(labels)}."
-        )
-        return
-
-    try:
-        entries_by_label = {}
-        for label, raw, filename in _payloads_for_kind(rows, "m2"):
+        for label, raw, filename in _payloads_for_kind(rows, "compounds"):
             entries_by_label[label] = parse_compounds_json(
                 raw, source_label=f"{label} ({filename})"
             )
@@ -869,57 +814,206 @@ def render_m2_section(rows: list[ModelUploads], baseline: str) -> None:
         st.error(str(error))
         return
 
+    preferred = baseline if baseline in nway.labels else (
+        "Claude" if "Claude" in nway.labels else nway.labels[0]
+    )
+    defaults = compute_cluster_baselines(nway, tiebreak_label="Claude")
+    clusters = clusters_sorted_by_consensus(nway)
+    model_labels = list(nway.labels)
+    signature = _compounds_editor_signature(rows, st.session_state.get("patent_id", ""))
+
     st.success(
-        f"M2 comparison complete — {len(nway.labels)} models, "
-        f"{len(nway.clusters)} compound clusters vs baseline **{baseline}**."
+        f"Compounds comparison complete — {len(nway.labels)} models, "
+        f"{len(nway.clusters)} compound clusters "
+        f"(adjudicated baseline: majority + Claude tiebreak)."
     )
     st.caption(
-        "Compounds match when any normalized identifier or alias overlaps. "
-        "No PubChem, RDKit, or embeddings."
+        "Matching waterfall: InChIKey → SMILES → molecular formula → normalized name/alias. "
+        "Edit any model column or Baseline; use **+** to add rows and **Delete selected rows** "
+        "to remove compounds from all three grids. Stats/PDF use the grids."
     )
 
-    st.subheader(f"Pairwise vs {baseline}")
-    pairwise_df = nway_pairwise_summary_dataframe(nway, baseline)
-    display_df = pairwise_df.copy()
-    if not display_df.empty:
-        display_df["recall_vs_baseline"] = display_df["recall_vs_baseline"].map(_format_rate)
-        display_df["precision_vs_baseline"] = display_df["precision_vs_baseline"].map(
-            _format_rate
-        )
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # Seed presence early so the sidebar inspector can list compounds (incl. added rows).
+    presence_seed = _seed_editor_df(
+        field="presence",
+        signature=signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+    )
+    presence_for_sidebar = st.session_state.get(
+        _editor_current_key("presence", signature), presence_seed
+    )
+    _render_compound_inspector_sidebar(
+        signature=signature,
+        presence_df=presence_for_sidebar,
+        clusters=clusters,
+        preferred=preferred,
+    )
 
-    st.subheader("Label counts")
-    st.dataframe(nway_label_counts_dataframe(nway), use_container_width=True, hide_index=True)
+    role_options = field_value_options(entries_by_label, "role")
+    id_type_options = field_value_options(entries_by_label, "identifier_type")
+
+    edited_presence = _render_editable_view(
+        title="Presence",
+        field="presence",
+        signature=signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+    )
+
+    edited_role = _render_editable_view(
+        title="Role",
+        field="role",
+        signature=signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+        select_options=role_options,
+    )
+
+    edited_id_type = _render_editable_view(
+        title="Identifier type",
+        field="identifier_type",
+        signature=signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+        select_options=id_type_options,
+    )
+
+    _render_compound_delete_controls(signature)
+    # Re-read current caches after editors (and possible delete+rerun path).
+    edited_presence = st.session_state[_editor_current_key("presence", signature)]
+    edited_role = st.session_state[_editor_current_key("role", signature)]
+    edited_id_type = st.session_state[_editor_current_key("identifier_type", signature)]
 
     memberships = build_upset_memberships(nway)
     st.subheader("UpSet — compound overlap")
-    _show_upset(memberships, key="m2_upset")
+    _show_upset(memberships, key="compounds_upset")
 
-    st.subheader("Multi-model clusters")
-    common_df = nway_clusters_dataframe(nway, min_labels=2)
-    if common_df.empty:
-        st.warning("No multi-model clusters.")
-    else:
-        st.dataframe(common_df, use_container_width=True, hide_index=True)
+    st.subheader("Compare vs manual benchmark")
+    weight_cols = st.columns(3)
+    with weight_cols[0]:
+        w_presence = st.number_input(
+            "Presence F1 weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            key=f"compounds_weight_presence_{signature}",
+        )
+    with weight_cols[1]:
+        w_role = st.number_input(
+            "Role accuracy weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.25,
+            step=0.05,
+            key=f"compounds_weight_role_{signature}",
+        )
+    with weight_cols[2]:
+        w_id_type = st.number_input(
+            "Identifier-type accuracy weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.50,
+            step=0.05,
+            key=f"compounds_weight_id_type_{signature}",
+        )
+    weights = {
+        "presence_f1": float(w_presence),
+        "role_accuracy": float(w_role),
+        "identifier_type_accuracy": float(w_id_type),
+    }
 
-    only_cols = st.columns(min(len(labels), 3))
-    for index, label in enumerate(labels):
-        only_entries = nway.only_entries(label)
-        with only_cols[index % len(only_cols)]:
-            st.subheader(f"{label} only ({len(only_entries)})")
-            if only_entries:
-                st.dataframe(
-                    entries_to_dataframe(only_entries),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                type_counts = identifier_type_counts(only_entries)
-                st.caption(
-                    "By identifier_type: "
-                    + ", ".join(f"{key}={value}" for key, value in sorted(type_counts.items()))
-                )
-            else:
-                st.success(f"No {label}-only compounds.")
+    presence_stats = compute_presence_stats(edited_presence, model_labels)
+    role_scoped = filter_by_presence_baseline(edited_role, edited_presence)
+    id_type_scoped = filter_by_presence_baseline(edited_id_type, edited_presence)
+    role_acc = compute_field_accuracy(role_scoped, model_labels).rename(
+        columns={"accuracy": "role_accuracy"}
+    )
+    id_acc = compute_field_accuracy(id_type_scoped, model_labels).rename(
+        columns={"accuracy": "identifier_type_accuracy"}
+    )
+    stats_df = presence_stats.merge(role_acc, on="model", how="outer").merge(
+        id_acc, on="model", how="outer"
+    )
+    stats_df = rank_models(stats_df, weights=weights)
+
+    display_stats = stats_df.copy()
+    for col in [
+        "composite_score",
+        "presence_precision",
+        "presence_recall",
+        "presence_f1",
+        "role_accuracy",
+        "identifier_type_accuracy",
+    ]:
+        if col not in display_stats.columns:
+            continue
+        display_stats[col] = display_stats[col].map(
+            lambda v: "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.1%}"
+        )
+    st.dataframe(display_stats, use_container_width=True, hide_index=True)
+
+    chart_df = stats_df.melt(
+        id_vars=["model"],
+        value_vars=["presence_f1", "role_accuracy", "identifier_type_accuracy"],
+        var_name="metric",
+        value_name="score",
+    )
+    chart_df = chart_df.dropna(subset=["score"])
+    if not chart_df.empty:
+        bar_fig = px.bar(
+            chart_df,
+            x="model",
+            y="score",
+            color="metric",
+            barmode="group",
+            title="F1 / accuracy vs edited baseline (ranked)",
+            range_y=[0, 1],
+            category_orders={"model": list(stats_df["model"])},
+        )
+        st.plotly_chart(bar_fig, use_container_width=True)
+
+    pipeline_ids_by_label: dict[str, str] = {}
+    num_models_state = st.session_state.get("num_models")
+    try:
+        num_models_int = int(num_models_state) if num_models_state is not None else 0
+    except (TypeError, ValueError):
+        num_models_int = 0
+    for index in range(num_models_int):
+        label = st.session_state.get(f"model_label_{index}", "").strip()
+        pipeline_id = st.session_state.get(f"pipeline_id_{index}", "").strip()
+        if label in model_labels and pipeline_id:
+            pipeline_ids_by_label[label] = pipeline_id
+
+    patent_id = st.session_state.get("patent_id", "").strip() or "compounds"
+    try:
+        pdf_bytes = build_compounds_pdf_report(
+            patent_id,
+            pipeline_ids_by_label,
+            stats_df,
+            edited_presence,
+            edited_role,
+            edited_id_type,
+        )
+        st.download_button(
+            "Download PDF report",
+            data=pdf_bytes,
+            file_name=f"{patent_id}-compounds-benchmark.pdf",
+            mime="application/pdf",
+            key=f"compounds_pdf_{signature}",
+        )
+    except Exception as error:  # noqa: BLE001
+        st.warning(f"PDF export unavailable: {error}")
+
 
 
 def render_reactions_section(rows: list[ModelUploads], baseline: str) -> None:
@@ -1004,6 +1098,126 @@ def render_reactions_section(rows: list[ModelUploads], baseline: str) -> None:
                 st.dataframe(fn_df, use_container_width=True, hide_index=True)
 
 
+def _apply_fetch_results(index: int, results: dict[str, FetchResult]) -> int:
+    """Store fetch results for a model row; return count of found artifacts."""
+    for kind, result in results.items():
+        if result.found and result.content is not None and result.filename:
+            st.session_state[f"fetched_{kind}_{index}"] = (
+                result.content,
+                result.filename,
+            )
+        else:
+            st.session_state.pop(f"fetched_{kind}_{index}", None)
+    st.session_state[f"fetch_status_{index}"] = results
+    return sum(1 for result in results.values() if result.found)
+
+
+def _fetch_one_row(
+    index: int, patent_id: str, pipeline_id: str
+) -> tuple[int, dict[str, FetchResult] | BaseException]:
+    try:
+        results = fetch_pipeline_artifacts(
+            patent_id,
+            pipeline_id,
+            resolve_base=_resolve_base_for_ui,
+        )
+        return index, results
+    except Exception as error:  # noqa: BLE001
+        return index, error
+
+
+@st.fragment
+def _render_model_row(index: int) -> None:
+    """One model row; fragment-scoped so fetch/clear only reruns this row."""
+    st.markdown(f"**Model {index + 1}**")
+    label_col, pipeline_col, fetch_col, clear_col = st.columns(
+        [1.5, 2.0, 1.0, 1.0],
+        vertical_alignment="bottom",
+    )
+    with label_col:
+        st.text_input(
+            "Label",
+            value=_default_label(index),
+            key=f"model_label_{index}",
+            placeholder="e.g. Claude, DeepSeekFlash",
+        )
+    with pipeline_col:
+        st.text_input(
+            "Pipeline ID",
+            value=_default_pipeline_id(index),
+            key=f"pipeline_id_{index}",
+            placeholder="e.g. section-wise-v1",
+        )
+    with fetch_col:
+        fetch_clicked = st.button(
+            "Fetch from blob",
+            key=f"fetch_blob_{index}",
+            use_container_width=True,
+        )
+    with clear_col:
+        clear_clicked = st.button(
+            "Clear fetched",
+            key=f"clear_fetched_{index}",
+            use_container_width=True,
+        )
+
+    if clear_clicked:
+        _clear_fetched_row(index)
+        st.rerun()
+
+    if fetch_clicked:
+        patent_id = st.session_state.get("patent_id", "").strip()
+        pipeline_id = st.session_state.get(f"pipeline_id_{index}", "").strip()
+        if not patent_id:
+            st.error("Enter a Patent ID before fetching.")
+        elif not pipeline_id:
+            st.error(f"Model {index + 1}: enter a Pipeline ID before fetching.")
+        else:
+            try:
+                with st.spinner(f"Fetching pipeline `{pipeline_id}` for `{patent_id}`..."):
+                    results = fetch_pipeline_artifacts(
+                        patent_id,
+                        pipeline_id,
+                        resolve_base=_resolve_base_for_ui,
+                    )
+                found_count = _apply_fetch_results(index, results)
+                if found_count:
+                    st.success(
+                        f"Model {index + 1}: fetched {found_count}/{len(FILE_KINDS)} "
+                        f"artifact(s) for `{pipeline_id}`."
+                    )
+                else:
+                    st.warning(
+                        f"Model {index + 1}: no artifacts found for `{patent_id}` / "
+                        f"`{pipeline_id}`."
+                    )
+            except (BlobConfigError, ValueError) as error:
+                st.error(str(error))
+            except Exception as error:  # noqa: BLE001
+                st.error(f"Blob fetch failed: {error}")
+
+    status = st.session_state.get(f"fetch_status_{index}")
+    status_text = _format_fetch_status(status)
+    if status_text:
+        st.caption(status_text)
+
+    label_col, *file_cols = st.columns([1.2, 1, 1, 1, 1, 1])
+    with label_col:
+        st.caption("Manual upload fallback")
+    for kind, col in zip(FILE_KINDS, file_cols):
+        with col:
+            fetched = st.session_state.get(f"fetched_{kind}_{index}")
+            label = FILE_KIND_LABELS[kind]
+            if fetched is not None:
+                label = f"{label} (fetched)"
+            st.file_uploader(
+                label,
+                type=["json"],
+                key=f"{kind}_file_{index}",
+            )
+
+
+
 def main():
     st.set_page_config(
         page_title="Multi-model Benchmark",
@@ -1032,107 +1246,54 @@ def main():
         "Number of models",
         min_value=2,
         max_value=8,
-        value=2,
+        value=6,
         step=1,
+        key="num_models",
         help="Each row is one model. Fill only the file slots you want to compare.",
     )
 
-    for index in range(num_models):
-        st.markdown(f"**Model {index + 1}**")
-        label_col, pipeline_col, fetch_col, clear_col = st.columns(
-            [1.5, 2.0, 1.0, 1.0],
-            vertical_alignment="bottom",
-        )
-        with label_col:
-            st.text_input(
-                "Label",
-                value=_default_label(index),
-                key=f"model_label_{index}",
-                placeholder="e.g. Claude, DeepSeek",
-            )
-        with pipeline_col:
-            st.text_input(
-                "Pipeline ID",
-                value=_default_pipeline_id(index),
-                key=f"pipeline_id_{index}",
-                placeholder="e.g. section-wise-v1",
-            )
-        with fetch_col:
-            fetch_clicked = st.button(
-                "Fetch from blob",
-                key=f"fetch_blob_{index}",
-                use_container_width=True,
-            )
-        with clear_col:
-            clear_clicked = st.button(
-                "Clear fetched",
-                key=f"clear_fetched_{index}",
-                use_container_width=True,
-            )
-
-        if clear_clicked:
-            _clear_fetched_row(index)
-            st.rerun()
-
-        if fetch_clicked:
-            patent_id = st.session_state.get("patent_id", "").strip()
-            pipeline_id = st.session_state.get(f"pipeline_id_{index}", "").strip()
-            if not patent_id:
-                st.error("Enter a Patent ID before fetching.")
-            elif not pipeline_id:
-                st.error(f"Model {index + 1}: enter a Pipeline ID before fetching.")
+    fetch_all_clicked = st.button("Fetch all", type="secondary")
+    if fetch_all_clicked:
+        patent_id = st.session_state.get("patent_id", "").strip()
+        if not patent_id:
+            st.error("Enter a Patent ID before fetching.")
+        else:
+            jobs: list[tuple[int, str]] = []
+            for index in range(int(num_models)):
+                pipeline_id = st.session_state.get(f"pipeline_id_{index}", "").strip()
+                if pipeline_id:
+                    jobs.append((index, pipeline_id))
+            if not jobs:
+                st.warning("No pipeline IDs configured — nothing to fetch.")
             else:
-                try:
-                    with st.spinner(f"Fetching pipeline `{pipeline_id}` for `{patent_id}`..."):
-                        results = fetch_pipeline_artifacts(
-                            patent_id,
-                            pipeline_id,
-                            resolve_base=_resolve_base_for_ui,
-                        )
-                    for kind, result in results.items():
-                        if result.found and result.content is not None and result.filename:
-                            st.session_state[f"fetched_{kind}_{index}"] = (
-                                result.content,
-                                result.filename,
-                            )
-                        else:
-                            st.session_state.pop(f"fetched_{kind}_{index}", None)
-                    st.session_state[f"fetch_status_{index}"] = results
-                    found_count = sum(1 for r in results.values() if r.found)
-                    if found_count:
-                        st.success(
-                            f"Model {index + 1}: fetched {found_count}/{len(FILE_KINDS)} "
-                            f"artifact(s) for `{pipeline_id}`."
-                        )
-                    else:
-                        st.warning(
-                            f"Model {index + 1}: no artifacts found for `{patent_id}` / "
-                            f"`{pipeline_id}`."
-                        )
-                except (BlobConfigError, ValueError) as error:
-                    st.error(str(error))
-                except Exception as error:  # noqa: BLE001
-                    st.error(f"Blob fetch failed: {error}")
+                with st.spinner(f"Fetching {len(jobs)} model row(s) in parallel..."):
+                    with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as executor:
+                        futures = [
+                            executor.submit(_fetch_one_row, index, patent_id, pipeline_id)
+                            for index, pipeline_id in jobs
+                        ]
+                        for future in as_completed(futures):
+                            index, outcome = future.result()
+                            if isinstance(outcome, BaseException):
+                                st.error(f"Model {index + 1}: {outcome}")
+                                continue
+                            found_count = _apply_fetch_results(index, outcome)
+                            pipeline_id = st.session_state.get(
+                                f"pipeline_id_{index}", ""
+                            ).strip()
+                            if found_count:
+                                st.success(
+                                    f"Model {index + 1}: fetched {found_count}/{len(FILE_KINDS)} "
+                                    f"artifact(s) for `{pipeline_id}`."
+                                )
+                            else:
+                                st.warning(
+                                    f"Model {index + 1}: no artifacts found for `{patent_id}` / "
+                                    f"`{pipeline_id}`."
+                                )
 
-        status = st.session_state.get(f"fetch_status_{index}")
-        status_text = _format_fetch_status(status)
-        if status_text:
-            st.caption(status_text)
-
-        label_col, *file_cols = st.columns([1.2, 1, 1, 1, 1, 1])
-        with label_col:
-            st.caption("Manual upload fallback")
-        for kind, col in zip(FILE_KINDS, file_cols):
-            with col:
-                fetched = st.session_state.get(f"fetched_{kind}_{index}")
-                label = FILE_KIND_LABELS[kind]
-                if fetched is not None:
-                    label = f"{label} (fetched)"
-                st.file_uploader(
-                    label,
-                    type=["json"],
-                    key=f"{kind}_file_{index}",
-                )
+    for index in range(int(num_models)):
+        _render_model_row(index)
 
     st.subheader("Shared inputs")
     md_label_col, md_file_col, md_fetch_col, md_clear_col = st.columns(
@@ -1266,9 +1427,7 @@ def main():
 
     render_prepass_section(rows, baseline, markdown_bytes)
     st.divider()
-    render_m1_section(rows, baseline)
-    st.divider()
-    render_m2_section(rows, baseline)
+    render_compounds_section(rows, baseline)
     st.divider()
     render_r1_section(rows, baseline, markdown_bytes)
     st.divider()

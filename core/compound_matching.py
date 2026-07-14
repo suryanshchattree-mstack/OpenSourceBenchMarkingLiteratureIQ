@@ -13,6 +13,16 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 _HYPHEN_SPACES = re.compile(r"\s*-\s*")
 _TRAILING_PUNCT = re.compile(r"[.,;]+$")
 
+# Strongest → weakest. Cluster match_tier is the weakest tier that contributed a merge.
+MATCH_TIERS = ("inchi_key", "smiles", "molecular_formula", "name")
+
+MATCH_TIER_DISPLAY = {
+    "inchi_key": "InChIKey",
+    "smiles": "SMILES",
+    "molecular_formula": "Formula (weak)",
+    "name": "Name",
+}
+
 
 class HasNamePool(Protocol):
     """Minimal shape needed for identifier/alias union-find matching."""
@@ -38,6 +48,24 @@ def canonicalize_name(raw: str | None) -> str | None:
     return text or None
 
 
+def canonicalize_smiles(raw_smiles: str | None) -> str | None:
+    """Canonical RDKit SMILES, or None if missing/unparseable."""
+    if raw_smiles is None:
+        return None
+    text = str(raw_smiles).strip()
+    if not text:
+        return None
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+    mol = Chem.MolFromSmiles(text)
+    if mol is None:
+        return None
+    canonical = Chem.MolToSmiles(mol, canonical=True)
+    return canonical or None
+
+
 def build_name_pool(entry: HasNamePool) -> set[str]:
     """All normalized names for a compound (identifier + aliases)."""
     pool: set[str] = set()
@@ -47,6 +75,31 @@ def build_name_pool(entry: HasNamePool) -> set[str]:
         if name := canonicalize_name(alias):
             pool.add(name)
     return pool
+
+
+def format_match_tier(match_tier: str | None) -> str:
+    """Human-readable match-tier label for tables / UI."""
+    if match_tier is None or match_tier == "single-model":
+        return "—"
+    return MATCH_TIER_DISPLAY.get(match_tier, match_tier)
+
+
+def _tier_key(compound: HasNamePool, tier: str) -> str | None:
+    if tier == "inchi_key":
+        value = getattr(compound, "inchi_key", None)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+    if tier == "smiles":
+        return canonicalize_smiles(getattr(compound, "smiles", None))
+    if tier == "molecular_formula":
+        value = getattr(compound, "molecular_formula", None)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+    return None
 
 
 class _UnionFind:
@@ -60,11 +113,12 @@ class _UnionFind:
             node = self.parent[node]
         return node
 
-    def union(self, left: int, right: int) -> None:
+    def union(self, left: int, right: int) -> bool:
+        """Unite two nodes. Returns True if they were previously separate."""
         root_left = self.find(left)
         root_right = self.find(right)
         if root_left == root_right:
-            return
+            return False
         if self.rank[root_left] < self.rank[root_right]:
             self.parent[root_left] = root_right
         elif self.rank[root_left] > self.rank[root_right]:
@@ -72,6 +126,7 @@ class _UnionFind:
         else:
             self.parent[root_right] = root_left
             self.rank[root_left] += 1
+        return True
 
 
 @dataclass(frozen=True)
@@ -96,6 +151,7 @@ class NWayCluster(Generic[TEntry]):
 
     membership: frozenset[str]
     representatives: Mapping[str, TEntry]
+    match_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -169,14 +225,61 @@ def _cluster_sort_key(cluster: NWayCluster[TEntry]) -> tuple[str, ...]:
     return (min(names) if names else "", *sorted(cluster.membership))
 
 
+def _weaker_tier(left: str | None, right: str | None) -> str | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left if MATCH_TIERS.index(left) >= MATCH_TIERS.index(right) else right
+
+
+def _union_with_tier(
+    uf: _UnionFind,
+    left: int,
+    right: int,
+    tier: str,
+    component_tier: dict[int, str | None],
+) -> bool:
+    root_left = uf.find(left)
+    root_right = uf.find(right)
+    if root_left == root_right:
+        return False
+    left_tier = component_tier.get(root_left)
+    right_tier = component_tier.get(root_right)
+    uf.union(left, right)
+    new_root = uf.find(left)
+    merged = _weaker_tier(left_tier, right_tier)
+    merged = _weaker_tier(merged, tier)
+    for old_root in (root_left, root_right):
+        component_tier.pop(old_root, None)
+    component_tier[new_root] = merged
+    return True
+
+
+def _apply_key_groups(
+    uf: _UnionFind,
+    key_to_indices: Mapping[str, list[int]],
+    tier: str,
+    component_tier: dict[int, str | None],
+) -> None:
+    for indices in key_to_indices.values():
+        if len(indices) < 2:
+            continue
+        anchor = indices[0]
+        for other in indices[1:]:
+            _union_with_tier(uf, anchor, other, tier, component_tier)
+
+
 def diff_compounds_nway(
     entries_by_label: Mapping[str, list[TEntry]],
 ) -> NWayDiffResult[TEntry]:
     """
     Deterministically compare N labeled compound lists.
 
-    Matching rule: two compounds match if any normalized identifier or alias overlaps.
-    Within-label duplicates (overlapping name pools) are merged before cross-label diff.
+    Matching waterfall (strongest → weakest): inchi_key → smiles → molecular_formula → name.
+    Within-label duplicates are merged before cross-label diff. Each cluster records
+    ``match_tier`` as the weakest tier that contributed a successful union
+    (``None`` when the cluster is a single unmerged entry).
     """
     labels = tuple(entries_by_label.keys())
     raw_counts = {label: len(entries) for label, entries in entries_by_label.items()}
@@ -195,18 +298,25 @@ def diff_compounds_nway(
             deduped_counts={label: 0 for label in labels},
         )
 
-    name_to_indices: dict[str, list[int]] = {}
-    for index, compound in enumerate(all_compounds):
-        for name in build_name_pool(compound):
-            name_to_indices.setdefault(name, []).append(index)
-
     uf = _UnionFind(len(all_compounds))
-    for indices in name_to_indices.values():
-        if len(indices) < 2:
+    component_tier: dict[int, str | None] = {}
+
+    for tier in MATCH_TIERS:
+        if tier == "name":
+            name_to_indices: dict[str, list[int]] = {}
+            for index, compound in enumerate(all_compounds):
+                for name in build_name_pool(compound):
+                    name_to_indices.setdefault(name, []).append(index)
+            _apply_key_groups(uf, name_to_indices, tier, component_tier)
             continue
-        anchor = indices[0]
-        for other in indices[1:]:
-            uf.union(anchor, other)
+
+        key_to_indices: dict[str, list[int]] = {}
+        for index, compound in enumerate(all_compounds):
+            key = _tier_key(compound, tier)
+            if key is None:
+                continue
+            key_to_indices.setdefault(key, []).append(index)
+        _apply_key_groups(uf, key_to_indices, tier, component_tier)
 
     # root -> label -> compound indices
     groups: dict[int, dict[str, list[int]]] = {}
@@ -224,8 +334,14 @@ def diff_compounds_nway(
         }
         for label in by_label:
             deduped_counts[label] += 1
+        entry_count = sum(len(indices) for indices in by_label.values())
+        match_tier = component_tier.get(root) if entry_count > 1 else None
         clusters.append(
-            NWayCluster(membership=membership, representatives=representatives)
+            NWayCluster(
+                membership=membership,
+                representatives=representatives,
+                match_tier=match_tier,
+            )
         )
 
     clusters.sort(key=_cluster_sort_key)

@@ -1,13 +1,13 @@
 # Multi-model Benchmark Streamlit App
 
-Single-screen tool to compare N labeled model runs across five optional output kinds (pre-pass, M1, M2, R1 step boundaries, reactions). Fetch artifacts from Azure Blob by Patent ID + Pipeline ID, or upload files manually, pick one shared baseline, click **Run Benchmarks** — each section runs independently and skips with a notice when it lacks enough inputs.
+Single-screen tool to compare N labeled model runs across four optional output kinds (pre-pass, compounds, R1 step boundaries, reactions). Fetch artifacts from Azure Blob by Patent ID + Pipeline ID, or upload files manually, pick one shared baseline, click **Run Benchmarks** — each section runs independently and skips with a notice when it lacks enough inputs.
 
 ## Requirements
 
 - Python 3.10+ (for Streamlit Community Cloud, set **Python 3.12** in Advanced settings — `runtime.txt` is ignored by Cloud and the platform may default to 3.14)
 - macOS Apple Silicon (MPS) recommended — falls back to CPU if MPS unavailable
 - ~4 GB free RAM for loading three embedding models (used by pre-pass and R1)
-- `rdkit` (reactions SMILES axis) and `upsetplot` (M1/M2 overlap plots; falls back to a bar chart on Python 3.13+)
+- `rdkit` (reactions SMILES axis) and `upsetplot` (compounds overlap plots; falls back to a bar chart on Python 3.13+)
 - Optional: Azure Storage connection string for blob fetch (manual upload still works without it)
 
 ## Setup
@@ -60,22 +60,23 @@ Blob layout (mirrors literatureiq-engine):
 ```
 literature/patents/{countryCode}/{hashBucket}/{uuid5}/
   enriched/en/markdown.md          # preferred; falls back to en/markdown.md
+  compounds.json                   # baseline pipeline section-wise-v1
   reactions.json                   # baseline pipeline section-wise-v1
   extraction/{pipelineId}/
     pre-pass-{timestamp}.json      # latest by prefix
-    molecule-pass-1-consolidated.json
-    molecule-pass-2-consolidated.json
     reaction-pass-1-consolidated.json
+    compounds.json                 # non-baseline pipelines
     reactions.json                 # non-baseline pipelines
 ```
+
+Legacy fallback (tried last for compounds/reactions): `persistent-store/{patentId}/compounds.json` and `…/reactions.json`.
 
 ### Upload matrix
 
 | Slot | Used by |
 |------|---------|
 | Pre-pass JSON | Pre-pass section timeline / scores |
-| M1 JSON | Molecule pass 1 N-way match + field agreement |
-| M2 JSON | Molecule pass 2 N-way match + UpSet |
+| Compounds JSON | Presence matrix, UpSet, role/identifier_type matrices, confusion matrices |
 | R1 JSON | Step-boundary comparison (same visuals as pre-pass) |
 | Reactions JSON | Pairwise reaction panels vs baseline |
 | Enriched markdown | Shared `total_lines` for pre-pass + R1 |
@@ -86,9 +87,15 @@ Fill only the slots you need. A section needs ≥ 2 uploads of that kind (reacti
 
 Pre-pass: top-level array of groups with `sections[]`. R1: flat or double-encoded step lists mapped onto the same `Section` geometry (`start_line` / `end_line` are document-global). R1 `section_type` is inherited from pre-pass, so type agreement is less meaningful than boundary geometry.
 
-### M1 / M2
+### Compounds
 
-Deterministic identifier/alias union-find across N models, UpSet overlap plot, and pairwise recall/precision vs baseline. M1 adds field-agreement metrics (identifier_type, role, aliases, quantity presence).
+Deterministic identifier/alias union-find across N models on persistent-store `compounds.json`. Views:
+
+1. **Presence matrix** — clusters × models, present/absent, sorted by consensus count
+2. **UpSet** — same cluster memberships as overlap plot
+3. **Role matrix** — multi-model clusters only; cell = `role`; disagreements first
+4. **Identifier-type matrix** — same skeleton for `identifier_type`
+5. **Confusion matrices** — aggregate baseline×other co-occurrence for role and identifier_type
 
 ### Reactions
 
@@ -100,10 +107,10 @@ One pairwise panel per non-baseline model (name / SMILES / reactants / procedure
 # Pre-pass
 python compare_cli.py ...
 
-# M2 2-way
+# Compounds 2-way
 python compound_compare_cli.py \
-  --claude Claude:path/to/claude-m2.json \
-  --benchmark DeepSeek:path/to/deepseek-m2.json
+  --claude Claude:path/to/claude-compounds.json \
+  --benchmark DeepSeek:path/to/deepseek-compounds.json
 ```
 
 ## Project structure
@@ -111,7 +118,7 @@ python compound_compare_cli.py \
 ```
 prepass-benchmark/
 ├── app.py                      # Unified Streamlit screen
-├── compound_compare_cli.py     # M2 diff CLI
+├── compound_compare_cli.py     # Compounds diff CLI
 ├── compare_cli.py              # Pre-pass CLI
 ├── requirements.txt
 ├── .env.example                # Azure connection string + container
@@ -124,8 +131,8 @@ prepass-benchmark/
     ├── line_arrays.py          # per-line type/label painting
     ├── embeddings.py           # 3 models, MPS, cosine similarity
     ├── scoring.py / flagging.py / visuals.py
-    ├── m1_parsing.py / m1_agreement.py
     ├── compound_parsing.py / compound_matching.py / compound_report.py
+    ├── compound_visuals.py     # Presence / role / id-type / confusion heatmaps
     ├── upset_viz.py
     └── reaction_parsing.py / reaction_matching.py / reaction_report.py
 ```

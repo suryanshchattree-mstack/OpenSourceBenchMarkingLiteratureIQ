@@ -12,9 +12,8 @@ from dotenv import load_dotenv
 from core.blob_paths import (
     HASH_BUCKET_COUNT,
     base_path,
+    compounds_fallback_paths,
     country_code,
-    m1_path,
-    m2_path,
     markdown_paths,
     prepass_prefix,
     r1_path,
@@ -26,7 +25,7 @@ load_dotenv()
 
 DEFAULT_CONTAINER = "datalake-raw-store"
 
-FILE_KINDS = ("prepass", "m1", "m2", "r1", "reactions")
+FILE_KINDS = ("prepass", "compounds", "r1", "reactions")
 
 
 @dataclass(frozen=True)
@@ -199,6 +198,16 @@ def _fetch_reactions(container, base: str, patent_id: str, pipeline_id: str) -> 
     return last if last is not None else _missing()
 
 
+def _fetch_compounds(container, base: str, patent_id: str, pipeline_id: str) -> FetchResult:
+    last: FetchResult | None = None
+    for path in compounds_fallback_paths(base, patent_id, pipeline_id):
+        result = _safe_download(container, path)
+        if result.found:
+            return result
+        last = result
+    return last if last is not None else _missing()
+
+
 def fetch_pipeline_artifacts(
     patent_id: str,
     pipeline_id: str,
@@ -207,7 +216,7 @@ def fetch_pipeline_artifacts(
     resolve_base: Callable[[str], str] | None = None,
 ) -> dict[str, FetchResult]:
     """
-    Fetch the five FILE_KINDS for ``pipeline_id``.
+    Fetch the four FILE_KINDS for ``pipeline_id``.
 
     Missing kinds return ``found=False`` without raising. Azure/auth errors are
     captured on each result's ``error`` field when possible; config errors raise
@@ -225,8 +234,7 @@ def fetch_pipeline_artifacts(
 
     results: dict[str, FetchResult] = {
         "prepass": _fetch_prepass(client, base, pipeline_id),
-        "m1": _safe_download(client, m1_path(base, pipeline_id)),
-        "m2": _safe_download(client, m2_path(base, pipeline_id)),
+        "compounds": _fetch_compounds(client, base, patent_id, pipeline_id),
         "r1": _safe_download(client, r1_path(base, pipeline_id)),
         "reactions": _fetch_reactions(client, base, patent_id, pipeline_id),
     }

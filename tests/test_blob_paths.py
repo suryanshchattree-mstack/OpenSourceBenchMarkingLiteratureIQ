@@ -8,10 +8,10 @@ import uuid
 from core.blob_paths import (
     BASELINE_PIPELINE_ID,
     base_path,
+    compounds_fallback_paths,
+    compounds_path,
     country_code,
     hash_bucket,
-    m1_path,
-    m2_path,
     markdown_paths,
     pipeline_prefix,
     prepass_prefix,
@@ -75,16 +75,45 @@ class BlobPathsTest(unittest.TestCase):
             f"{base}/extraction/{pipeline_id}/pre-pass-",
         )
         self.assertEqual(
-            m1_path(base, pipeline_id),
-            f"{base}/extraction/{pipeline_id}/molecule-pass-1-consolidated.json",
-        )
-        self.assertEqual(
-            m2_path(base, pipeline_id),
-            f"{base}/extraction/{pipeline_id}/molecule-pass-2-consolidated.json",
-        )
-        self.assertEqual(
             r1_path(base, pipeline_id),
             f"{base}/extraction/{pipeline_id}/reaction-pass-1-consolidated.json",
+        )
+
+    def test_compounds_path_baseline_vs_other(self) -> None:
+        base = "literature/patents/CN/99/abc"
+        self.assertEqual(
+            compounds_path(base, BASELINE_PIPELINE_ID),
+            f"{base}/compounds.json",
+        )
+        other = "section-wise-v1-deepseek-flash"
+        self.assertEqual(
+            compounds_path(base, other),
+            f"{base}/extraction/{other}/compounds.json",
+        )
+
+    def test_compounds_fallback_order(self) -> None:
+        base = "literature/patents/CN/99/abc"
+        patent_id = "CN105884573B"
+        baseline_fallbacks = compounds_fallback_paths(
+            base, patent_id, BASELINE_PIPELINE_ID
+        )
+        self.assertEqual(
+            baseline_fallbacks,
+            [
+                f"{base}/compounds.json",
+                f"{base}/extraction/{BASELINE_PIPELINE_ID}/compounds.json",
+                f"persistent-store/{patent_id}/compounds.json",
+            ],
+        )
+        other = "section-wise-v1-deepseek-flash"
+        other_fallbacks = compounds_fallback_paths(base, patent_id, other)
+        self.assertEqual(
+            other_fallbacks,
+            [
+                f"{base}/extraction/{other}/compounds.json",
+                f"{base}/compounds.json",
+                f"persistent-store/{patent_id}/compounds.json",
+            ],
         )
 
     def test_reactions_path_baseline_vs_other(self) -> None:

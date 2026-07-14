@@ -15,5 +15,18 @@ class DefaultPipelineIdTest(unittest.TestCase):
         self.assertEqual(_default_pipeline_id(7), "section-wise-v8")
 
 
+class DefaultRunLabelsTest(unittest.TestCase):
+    def test_six_standard_labels(self) -> None:
+        from app import DEFAULT_RUN_LABELS, _default_label
+
+        self.assertEqual(
+            DEFAULT_RUN_LABELS,
+            ["Claude", "DeepSeekFlash", "GLM", "DeepSeekPro", "Kimi", "MiniMax"],
+        )
+        self.assertEqual(_default_label(0), "Claude")
+        self.assertEqual(_default_label(5), "MiniMax")
+        self.assertEqual(_default_label(6), "Run 7")
+
+
 if __name__ == "__main__":
     unittest.main()
