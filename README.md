@@ -78,7 +78,7 @@ Root `compounds.json` / `reactions.json` are used only for `section-wise-v1`. Ot
 | Pre-pass JSON | Pre-pass section timeline / scores |
 | Compounds JSON | Presence matrix, UpSet, role/identifier_type matrices, confusion matrices |
 | R1 JSON | Step-boundary comparison (same visuals as pre-pass) |
-| Reactions JSON | Pairwise reaction panels vs baseline |
+| Reactions JSON | N-way presence / class / product grids, UpSet, ranking, PDF; pairwise under expander |
 | Enriched markdown | Shared `total_lines` for pre-pass + R1 |
 
 Fill only the slots you need. A section needs ≥ 2 uploads of that kind (reactions: baseline + ≥ 1 other). Missing kinds are skipped; the rest still run.
@@ -91,15 +91,26 @@ Pre-pass: top-level array of groups with `sections[]`. R1: flat or double-encode
 
 Deterministic identifier/alias union-find across N models on persistent-store `compounds.json`. Views:
 
-1. **Presence matrix** — clusters × models, present/absent, sorted by consensus count
-2. **UpSet** — same cluster memberships as overlap plot
-3. **Role matrix** — multi-model clusters only; cell = `role`; disagreements first
-4. **Identifier-type matrix** — same skeleton for `identifier_type`
-5. **Confusion matrices** — aggregate baseline×other co-occurrence for role and identifier_type
+1. **Raw compound inspector** (sidebar) — match tier + per-model raw JSON
+2. **Presence** editable grid — clusters × models + adjudicated Baseline
+3. **Role** / **Identifier type** editable grids — categorical cells; synced delete
+4. **UpSet** — compound overlap from cluster memberships
+5. **Compare vs manual benchmark** — presence F1 + field accuracy, weighted rank, bar chart, PDF
+
+Matching waterfall: InChIKey → SMILES → molecular formula → normalized name/alias. Baseline: majority presence + Claude tiebreak.
 
 ### Reactions
 
-One pairwise panel per non-baseline model (name / SMILES / reactants / procedure cosine / yield / conditions). `non_synthetic` records are filtered before scoring.
+N-way clustering on enriched `reactions.json` via a **reaction-then-procedure** waterfall (same view stack as compounds). `non_synthetic` filtered.
+
+1. **Raw reaction inspector** (sidebar)
+2. **Presence** / **Reaction class** / **Product** editable grids (Product cell = `product_name`, else short SMILES)
+3. Synced **Delete selected rows** across the three grids
+4. **UpSet — reaction overlap**
+5. **Compare vs manual benchmark** — presence F1 + class/product accuracy, weights, ranked table, bar chart, PDF + reaction-groups JSON
+6. Collapsed **Pairwise diagnostics** expander — legacy 6-axis matcher (name / SMILES / reactants / procedure / yield / conditions) vs baseline
+
+Matching waterfall: reaction-vector cosine ≥ 0.95, then procedure-vector ≥ 0.95 for leftovers (greedy cross-model edges, at most one reaction per model per cluster; defaults). Changing τ rebuilds presence/class/product grids and ranking from the new clusters (edits for that upload+τ combo are discarded; enrichment stays cached on upload hashes). Missing `reaction_vector`s are filled at compare time via existing `canonical_rxn` / SMILES → RDKit assemble → live **PubChem then OPSIN** name→SMILES (cached per run, Markush skipped) → **rxnfp** (pip package bundled `bert_ft` weights — install with `pip install --no-deps rxnfp`). Procedure embed text prefers `procedure_summary` then `procedure_text` (SciBERT).
 
 ## Headless CLIs (still available)
 
@@ -130,11 +141,15 @@ prepass-benchmark/
     ├── r1_parsing.py           # R1 → Section adapter
     ├── line_arrays.py          # per-line type/label painting
     ├── embeddings.py           # 3 models, MPS, cosine similarity
+    ├── scibert.py / procedure_vectors.py  # SciBERT + ensure procedure vectors
+    ├── rxnfp_embed.py / reaction_vectors.py / smiles_resolve.py  # rxnfp + SMILES ladder
     ├── scoring.py / flagging.py / visuals.py
     ├── compound_parsing.py / compound_matching.py / compound_report.py
-    ├── compound_visuals.py     # Presence / role / id-type / confusion heatmaps
-    ├── upset_viz.py
-    └── reaction_parsing.py / reaction_matching.py / reaction_report.py
+    ├── compound_baseline.py / compound_stats.py / compound_grid.py / compound_pdf.py
+    ├── upset_viz.py / compound_colors.py
+    ├── reaction_parsing.py / reaction_matching.py / reaction_nway.py
+    ├── reaction_baseline.py / reaction_stats.py / reaction_grid.py
+    ├── reaction_report.py / reaction_pdf.py
 ```
 
 ## Notes
@@ -142,4 +157,5 @@ prepass-benchmark/
 - Blob fetch is optional — without `.env` / credentials, use manual uploads as before.
 - If murmur3 hash-bucket disagrees with production, the client brute-forces all 128 buckets for that country code once per patent (cached in session).
 - Pre-pass/R1 threshold slider re-runs only flagging; embeddings are cached.
+- Reaction enrichment (PubChem/rxnfp/SciBERT) is cached on upload hashes; τ sliders re-cluster only.
 - Scores weight each line equally; longer sections contribute more to averages.

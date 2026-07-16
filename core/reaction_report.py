@@ -1,4 +1,4 @@
-"""Shared report formatting for reaction pairwise comparison."""
+"""Shared report formatting for reaction pairwise + N-way comparison."""
 
 from __future__ import annotations
 
@@ -6,7 +6,17 @@ from typing import Any
 
 import pandas as pd
 
-from core.reaction_matching import ReactionBenchmarkReport, ReactionMatchDetail
+from core.compound_matching import NWayCluster, NWayDiffResult, canonicalize_name
+from core.reaction_matching import (
+    ReactionBenchmarkReport,
+    ReactionMatchDetail,
+)
+from core.reaction_nway import (
+    MATCH_WATERFALL,
+    compound_smiles_set,
+    product_smiles_key,
+    reaction_row_label,
+)
 from core.reaction_parsing import ReactionEntry
 
 
@@ -14,15 +24,69 @@ def _format_list(values: tuple[str, ...]) -> str:
     return ", ".join(values) if values else ""
 
 
+def cluster_display_label(cluster: NWayCluster[ReactionEntry], preferred_label: str) -> str:
+    """Preferred model's row label if present, else alphabetically-first model's."""
+    if preferred_label in cluster.representatives:
+        return reaction_row_label(cluster.representatives[preferred_label])
+    if not cluster.representatives:
+        return "(empty)"
+    first_label = min(cluster.representatives.keys())
+    return reaction_row_label(cluster.representatives[first_label])
+
+
+def clusters_sorted_by_consensus(
+    nway_result: NWayDiffResult[ReactionEntry],
+) -> list[NWayCluster[ReactionEntry]]:
+    """Clusters ordered by membership size descending, then by canonical row label."""
+
+    def sort_key(cluster: NWayCluster[ReactionEntry]) -> tuple[int, str]:
+        names = [
+            canonicalize_name(reaction_row_label(entry)) or ""
+            for entry in cluster.representatives.values()
+        ]
+        return (-len(cluster.membership), min(names) if names else "")
+
+    return sorted(nway_result.clusters, key=sort_key)
+
+
+def build_upset_memberships(
+    nway_result: NWayDiffResult[ReactionEntry],
+) -> list[frozenset[str]]:
+    """One membership frozenset per cluster for ``upsetplot.from_memberships``."""
+    return [cluster.membership for cluster in nway_result.clusters]
+
+
+def enrichment_coverage_caption(
+    entries_by_label: dict[str, list[ReactionEntry]],
+) -> str:
+    """Per-model % with non-empty compound_smiles (clustering key coverage)."""
+    parts: list[str] = []
+    for label, entries in entries_by_label.items():
+        if not entries:
+            parts.append(f"{label}: n/a")
+            continue
+        n = len(entries)
+        with_set = sum(1 for e in entries if compound_smiles_set(e))
+        parts.append(
+            f"{label}: compound_smiles {with_set}/{n} "
+            f"({100.0 * with_set / n:.0f}%)"
+        )
+    return "Enrichment coverage — " + "; ".join(parts)
+
+
 def entry_to_dict(entry: ReactionEntry) -> dict[str, Any]:
     return {
+        "reaction_id": entry.reaction_id,
+        "canonical_rxn": entry.canonical_rxn,
         "product_name": entry.product_name,
         "product_smiles": entry.product_smiles,
+        "compound_smiles": sorted(compound_smiles_set(entry)),
         "reactant_names": list(entry.reactant_names),
         "reactant_smiles": list(entry.reactant_smiles),
         "product_yield_pct": entry.product_yield_pct,
         "procedure_text": entry.procedure_text,
         "has_procedure_vector": entry.procedure_vector is not None,
+        "has_reaction_vector": entry.reaction_vector is not None,
         "temperature_c": entry.temperature_c,
         "room_temperature": entry.room_temperature,
         "time_h": entry.time_h,
@@ -31,6 +95,100 @@ def entry_to_dict(entry: ReactionEntry) -> dict[str, Any]:
         "non_synthetic": entry.non_synthetic,
         "section_label": entry.section_label,
         "step_label": entry.step_label,
+        "step_index": entry.step_index,
+        "start_line": entry.start_line,
+        "end_line": entry.end_line,
+        "line_join": entry.line_join,
+    }
+
+
+def _model_payload(entry: ReactionEntry) -> dict[str, Any]:
+    """Prefer the original upload payload; overlay canonical SMILES + R1 lines."""
+    if entry.raw:
+        payload = dict(entry.raw)
+    else:
+        payload = entry_to_dict(entry)
+    if entry.product_smiles is not None:
+        payload["product_smiles"] = entry.product_smiles
+    payload["compound_smiles"] = sorted(compound_smiles_set(entry))
+    payload["start_line"] = entry.start_line
+    payload["end_line"] = entry.end_line
+    payload["step_index"] = entry.step_index
+    payload["line_join"] = entry.line_join
+    return payload
+
+
+def _cluster_line_span(cluster: NWayCluster[ReactionEntry]) -> dict[str, int] | None:
+    """Union of members' line spans when any lines are present (R1 traceability)."""
+    starts: list[int] = []
+    ends: list[int] = []
+    for entry in cluster.representatives.values():
+        if entry.start_line is not None and entry.end_line is not None:
+            starts.append(entry.start_line)
+            ends.append(entry.end_line)
+    if not starts:
+        return None
+    return {"start_line": min(starts), "end_line": max(ends)}
+
+
+def _cluster_product_smiles(cluster: NWayCluster[ReactionEntry]) -> str | None:
+    """Shared canonical product SMILES key when present on any member."""
+    keys = {
+        product_smiles_key(entry)
+        for entry in cluster.representatives.values()
+    }
+    keys.discard(None)
+    if len(keys) == 1:
+        return next(iter(keys))
+    return None
+
+
+def _cluster_compound_smiles(cluster: NWayCluster[ReactionEntry]) -> list[str]:
+    """Sorted union of members' compound SMILES sets (inspectability)."""
+    union: set[str] = set()
+    for entry in cluster.representatives.values():
+        union |= compound_smiles_set(entry)
+    return sorted(union)
+
+
+def build_reaction_groups_json(
+    nway_result: NWayDiffResult[ReactionEntry],
+    *,
+    patent_id: str,
+    baseline_label: str,
+) -> dict[str, Any]:
+    """Serialize compound-Jaccard N-way clusters with each model's payload + lines."""
+    preferred = (
+        baseline_label
+        if baseline_label in nway_result.labels
+        else (nway_result.labels[0] if nway_result.labels else baseline_label)
+    )
+    clusters_payload: list[dict[str, Any]] = []
+    for cluster in nway_result.clusters:
+        item: dict[str, Any] = {
+            "display_name": cluster_display_label(cluster, preferred),
+            "match_tier": cluster.match_tier,
+            "membership": sorted(cluster.membership),
+            "compound_smiles": _cluster_compound_smiles(cluster),
+            "models": {
+                label: _model_payload(entry)
+                for label, entry in sorted(cluster.representatives.items())
+            },
+        }
+        shared_smiles = _cluster_product_smiles(cluster)
+        if shared_smiles is not None:
+            item["product_smiles"] = shared_smiles
+        line_span = _cluster_line_span(cluster)
+        if line_span is not None:
+            item["line_span"] = line_span
+        clusters_payload.append(item)
+    return {
+        "patent_id": patent_id,
+        "baseline_label": baseline_label,
+        "match_waterfall": list(MATCH_WATERFALL),
+        "models": list(nway_result.labels),
+        "cluster_count": len(nway_result.clusters),
+        "clusters": clusters_payload,
     }
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -42,14 +43,40 @@ from core.flagging import build_disagree_mask, collapse_flag_regions
 from core.line_arrays import build_line_arrays
 from core.models import PrepassRun
 from core.parsing import parse_prepass_json, total_lines_from_markdown, type_distribution
-from core.r1_parsing import parse_r1_json
+from core.r1_parsing import parse_r1_json, parse_r1_step_dicts
+from core.reaction_line_join import join_reactions_to_r1, line_join_caption
+from core.reaction_baseline import (
+    compute_cluster_baselines as compute_reaction_baselines,
+    field_value_options as reaction_field_value_options,
+)
+from core.reaction_grid import REACTION_GRID_FIELDS, drop_reaction_rows
 from core.reaction_matching import compare_reactions
-from core.reaction_parsing import parse_reactions_json
+from core.reaction_nway import (
+    DEFAULT_COMPOUND_JACCARD_TAU,
+    diff_reactions_nway,
+    format_match_tier as format_reaction_match_tier,
+    prepare_reaction_entries,
+)
+from core.reaction_scoring import MatchConfig
+from core.reaction_parsing import ReactionEntry, parse_reactions_json
+from core.reaction_pdf import build_reactions_pdf_report
 from core.reaction_report import (
+    build_reaction_groups_json,
+    build_upset_memberships as build_reaction_upset_memberships,
+    cluster_display_label as reaction_cluster_display_label,
+    clusters_sorted_by_consensus as reaction_clusters_sorted_by_consensus,
+    enrichment_coverage_caption,
     false_negatives_to_dataframe,
     false_positives_to_dataframe,
     matched_pairs_to_dataframe as reaction_matched_pairs_to_dataframe,
     summary_to_dataframe as reaction_summary_to_dataframe,
+)
+from core.reaction_stats import (
+    compute_field_accuracy as compute_reaction_field_accuracy,
+    compute_presence_stats as compute_reaction_presence_stats,
+    filter_by_presence_baseline as filter_reaction_by_presence_baseline,
+    rank_models as rank_reaction_models,
+    seed_view_dataframe as seed_reaction_view_dataframe,
 )
 from core.scoring import compute_multi_run_scores, resolve_reference_index
 from core.upset_viz import render_upset
@@ -1015,87 +1042,726 @@ def render_compounds_section(rows: list[ModelUploads], baseline: str) -> None:
         st.warning(f"PDF export unavailable: {error}")
 
 
+def _reactions_upload_signature(rows: list[ModelUploads], patent_id: str) -> str:
+    """Upload identity only — used for τ slider widget keys (stable across τ moves)."""
+    reaction_payloads = _payloads_for_kind(rows, "reactions")
+    r1_payloads = _payloads_for_kind(rows, "r1")
+    parts = [
+        patent_id.strip(),
+        *(
+            f"rxn:{label}:{_file_hash(raw)}"
+            for label, raw, _ in sorted(reaction_payloads, key=lambda item: item[0])
+        ),
+        *(
+            f"r1:{label}:{_file_hash(raw)}"
+            for label, raw, _ in sorted(r1_payloads, key=lambda item: item[0])
+        ),
+    ]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    return digest
+
+
+def _match_config_sig(config: MatchConfig) -> str:
+    """Compact signature of all matcher knobs for editor/cache keys."""
+    return (
+        f"p={config.tau_provenance:.2f}|j={config.tau_jaccard:.2f}"
+        f"|c={config.tau_combined:.2f}|wpn={config.w_product_name:.2f}"
+        f"|wpr={config.w_procedure:.2f}|wc={config.w_compound:.2f}"
+        f"|wr={config.w_reaction:.2f}|ep={int(config.enable_provenance)}"
+        f"|ec={int(config.enable_combined)}"
+    )
+
+
+def _reactions_editor_signature(
+    rows: list[ModelUploads],
+    patent_id: str,
+    *,
+    config: MatchConfig,
+    enrich_vectors: bool = False,
+) -> str:
+    """Upload + matcher config — editor/ranking keys rebuild when any of them change."""
+    base = _reactions_upload_signature(rows, patent_id)
+    return f"{base}|{_match_config_sig(config)}|ev={int(enrich_vectors)}"
+
+
+def _reaction_enrich_cache_key(
+    rows: list[ModelUploads],
+) -> tuple[tuple[str, str, str], ...]:
+    """Sorted (label, file_hash, filename) for reaction upload cache identity."""
+    return tuple(
+        sorted(
+            (label, _file_hash(raw), filename)
+            for label, raw, filename in _payloads_for_kind(rows, "reactions")
+        )
+    )
+
+
+@st.cache_data(
+    show_spinner="Parsing reaction uploads…"
+)
+def prepare_reactions_cached(
+    cache_key: tuple[tuple[str, str, str], ...],
+    payloads: tuple[tuple[str, bytes, str], ...],
+) -> dict[str, list[ReactionEntry]]:
+    """Parse + filter reaction uploads once; keyed by upload hashes."""
+    _ = cache_key
+    entries_by_label: dict[str, list[ReactionEntry]] = {}
+    for label, raw, filename in payloads:
+        entries_by_label[label] = parse_reactions_json(
+            raw, source_label=f"{label} ({filename})"
+        )
+    return prepare_reaction_entries(entries_by_label)
+
+
+@st.cache_data(show_spinner="Computing procedure / reaction vectors…")
+def enrich_reaction_vectors_cached(
+    cache_key: tuple[tuple[str, str, str], ...],
+    _reactions_by_label: dict[str, list[ReactionEntry]],
+) -> dict[str, list[ReactionEntry]]:
+    """Fill missing procedure (SciBERT) + reaction (rxnfp) vectors, keyed on uploads.
+
+    ``_reactions_by_label`` is underscore-prefixed so Streamlit skips hashing it
+    (ReactionEntry carries an unhashable ``raw`` dict); the file-hash
+    ``cache_key`` is the real cache identity. Imports are local so the app runs
+    without torch / rxnfp when this toggle is off.
+    """
+    _ = cache_key
+    from core.procedure_vectors import ensure_procedure_vectors_by_label
+    from core.reaction_vectors import ensure_reaction_vectors_by_label
+
+    enriched = ensure_procedure_vectors_by_label(_reactions_by_label)
+    return ensure_reaction_vectors_by_label(enriched)
+
+
+def _rxn_editor_seed_key(field: str, signature: str) -> str:
+    return f"reactions_{field}_seed_{signature}"
+
+
+def _rxn_editor_widget_key(field: str, signature: str) -> str:
+    return f"reactions_{field}_editor_{signature}"
+
+
+def _rxn_editor_current_key(field: str, signature: str) -> str:
+    return f"reactions_{field}_current_{signature}"
+
+
+def _delete_reactions(signature: str, names: list[str]) -> None:
+    for field in REACTION_GRID_FIELDS:
+        seed_key = _rxn_editor_seed_key(field, signature)
+        if seed_key not in st.session_state:
+            continue
+        st.session_state[seed_key] = drop_reaction_rows(st.session_state[seed_key], names)
+        st.session_state.pop(_rxn_editor_widget_key(field, signature), None)
+        st.session_state.pop(_rxn_editor_current_key(field, signature), None)
+
+
+def _render_reaction_delete_controls(signature: str) -> None:
+    presence_df = st.session_state.get(_rxn_editor_current_key("presence", signature))
+    if not isinstance(presence_df, pd.DataFrame):
+        presence_df = st.session_state.get(_rxn_editor_seed_key("presence", signature))
+    if not isinstance(presence_df, pd.DataFrame) or presence_df.empty:
+        return
+    options = [
+        str(value).strip()
+        for value in presence_df.get("Reaction", pd.Series(dtype=str)).tolist()
+        if value is not None and str(value).strip()
+    ]
+    if not options:
+        return
+    st.markdown("#### Delete reactions")
+    selected = st.multiselect(
+        "Rows to delete",
+        options=options,
+        key=f"reactions_delete_select_{signature}",
+        help="Removes the selected reactions from Presence, Reaction class, and Product.",
+    )
+    if st.button("Delete selected rows", key=f"reactions_delete_btn_{signature}"):
+        if selected:
+            _delete_reactions(signature, selected)
+            st.rerun()
+        else:
+            st.warning("Select at least one reaction to delete.")
+
+
+def _seed_reaction_editor_df(
+    *,
+    field: str,
+    signature: str,
+    clusters: list,
+    model_labels: list[str],
+    defaults: dict,
+    preferred: str,
+) -> pd.DataFrame:
+    seed_key = _rxn_editor_seed_key(field, signature)
+    if seed_key not in st.session_state:
+        st.session_state[seed_key] = seed_reaction_view_dataframe(
+            clusters,
+            model_labels,
+            field,
+            defaults=defaults,
+            preferred_label=preferred,
+        )
+    return st.session_state[seed_key]
+
+
+def _render_reaction_editable_view(
+    *,
+    title: str,
+    field: str,
+    signature: str,
+    clusters: list,
+    model_labels: list[str],
+    defaults: dict,
+    preferred: str,
+    select_options: list[str] | None = None,
+) -> pd.DataFrame:
+    st.subheader(title)
+    seed_key = _rxn_editor_seed_key(field, signature)
+    widget_key = _rxn_editor_widget_key(field, signature)
+    current_key = _rxn_editor_current_key(field, signature)
+    _seed_reaction_editor_df(
+        field=field,
+        signature=signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+    )
+
+    column_config: dict[str, Any] = {
+        "Reaction": st.column_config.TextColumn("Reaction", required=True),
+        "Match tier": st.column_config.TextColumn("Match tier"),
+    }
+    if field == "presence":
+        column_config["Baseline"] = st.column_config.CheckboxColumn("Baseline")
+        for label in model_labels:
+            column_config[label] = st.column_config.CheckboxColumn(label)
+    else:
+        options = select_options or [NONE_SENTINEL]
+        column_config["Baseline"] = st.column_config.SelectboxColumn(
+            "Baseline", options=options
+        )
+        for label in model_labels:
+            column_config[label] = st.column_config.SelectboxColumn(
+                label, options=options
+            )
+
+    left_col, right_col = st.columns([1, 1])
+    with right_col:
+        edited_df = st.data_editor(
+            st.session_state[seed_key],
+            key=widget_key,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            height=_panel_height(max(len(st.session_state[seed_key]), 1)),
+        )
+        st.session_state[current_key] = edited_df
+        st.caption(
+            "Use **+** to add a row; use **Delete selected rows** below to remove "
+            "reactions from all three grids."
+        )
+    with left_col:
+        styler = (
+            _style_presence_values(edited_df, model_labels)
+            if field == "presence"
+            else _style_categorical_values(edited_df, model_labels)
+        )
+        st.dataframe(
+            styler,
+            use_container_width=True,
+            hide_index=True,
+            height=_panel_height(max(len(edited_df), 1)),
+        )
+    return edited_df
+
+
+def _render_reaction_inspector_sidebar(
+    *,
+    signature: str,
+    presence_df: pd.DataFrame,
+    clusters: list,
+    preferred: str,
+) -> None:
+    cluster_by_display = {
+        reaction_cluster_display_label(cluster, preferred): cluster for cluster in clusters
+    }
+    reactions = [
+        str(value).strip()
+        for value in presence_df.get("Reaction", pd.Series(dtype=str)).tolist()
+        if value is not None and str(value).strip()
+    ]
+    with st.sidebar:
+        st.subheader("Raw reaction inspector")
+        if not reactions:
+            st.caption("No reactions to inspect.")
+            return
+        selected = st.selectbox(
+            "Inspect a reaction",
+            options=reactions,
+            key=f"reaction_inspect_{signature}",
+        )
+        selected_cluster = cluster_by_display.get(selected)
+        if selected_cluster is None:
+            st.caption("No raw data (manually added)")
+            return
+        st.caption(f"Matched via: `{format_reaction_match_tier(selected_cluster.match_tier)}`")
+        for label in sorted(selected_cluster.membership):
+            entry = selected_cluster.representatives[label]
+            title = entry.product_name or entry.reaction_id or "(reaction)"
+            with st.expander(f"{label} — {title}"):
+                payload = dict(entry.raw) if entry.raw else {
+                    "reaction_id": entry.reaction_id,
+                    "product_name": entry.product_name,
+                    "product_smiles": entry.product_smiles,
+                    "reaction_class": entry.reaction_class,
+                    "section_label": entry.section_label,
+                    "step_label": entry.step_label,
+                }
+                st.json(payload)
+
+
+def _render_reaction_match_controls(upload_sig: str) -> tuple[MatchConfig, bool]:
+    """Render the tiered-matcher config expander; return (MatchConfig, enrich_vectors)."""
+    with st.expander("Matching configuration", expanded=False):
+        st.caption(
+            "Reactions are grouped by a **tiered matcher**, strongest tier first: "
+            "**provenance** (R1 line-span overlap) → **compound-set Jaccard** (whole "
+            "reaction — product + reactants/reagents/catalysts, not just the product) "
+            "→ **weighted combined** fallback. Matches greedily: the first qualifying "
+            "tier merges two reactions, one reaction per model. Using the whole "
+            "compound set (not exact product-SMILES alone) rejects false convergence: "
+            "a patent describing several distinct routes to the same final compound "
+            "won't merge those routes just because they share a product. Provenance "
+            "and the combined fallback are naming-independent, so they group reactions "
+            "even when a model emits a generic / Markush name (e.g. *trihalobenzene* "
+            "vs *1,2,4-trichlorobenzene*)."
+        )
+        enable_provenance = st.checkbox(
+            "Provenance tier (R1 line overlap)",
+            value=True,
+            key=f"reactions_en_prov_{upload_sig}",
+            help="Requires R1 uploads. Merges reactions whose R1 line spans overlap ≥ τ.",
+        )
+        tau_provenance = st.slider(
+            "Provenance τ (line-span interval Jaccard)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.50,
+            step=0.05,
+            key=f"reactions_tau_prov_{upload_sig}",
+        )
+        tau_jaccard = st.slider(
+            "Compound-set Jaccard τ",
+            min_value=0.50,
+            max_value=1.00,
+            value=DEFAULT_COMPOUND_JACCARD_TAU,
+            step=0.01,
+            key=f"reactions_tau_jaccard_{upload_sig}",
+            help=(
+                "Merge when |A∩B|/|A∪B| ≥ τ over role-filtered canonical SMILES sets "
+                "(product/reactants/reagents/catalysts/…). Empty sets never match here."
+            ),
+        )
+        enable_combined = st.checkbox(
+            "Weighted combined fallback",
+            value=True,
+            key=f"reactions_en_comb_{upload_sig}",
+            help="Blends soft signals for pairs no decisive tier resolved.",
+        )
+        tau_combined = st.slider(
+            "Combined τ (weighted blend)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.70,
+            step=0.05,
+            key=f"reactions_tau_comb_{upload_sig}",
+        )
+        st.caption(
+            "Combined-tier weights — renormalized over the signals actually present "
+            "on each pair (a missing procedure/reaction vector or empty set is dropped, "
+            "never scored as 0)."
+        )
+        weight_cols = st.columns(4)
+        w_product_name = weight_cols[0].slider(
+            "Product name", 0.0, 1.0, 0.30, 0.05, key=f"reactions_w_pn_{upload_sig}"
+        )
+        w_procedure = weight_cols[1].slider(
+            "Procedure text", 0.0, 1.0, 0.30, 0.05, key=f"reactions_w_proc_{upload_sig}"
+        )
+        w_compound = weight_cols[2].slider(
+            "Compound Jaccard", 0.0, 1.0, 0.25, 0.05, key=f"reactions_w_cmp_{upload_sig}"
+        )
+        w_reaction = weight_cols[3].slider(
+            "Reaction fp", 0.0, 1.0, 0.15, 0.05, key=f"reactions_w_rxn_{upload_sig}"
+        )
+        enrich_vectors = st.checkbox(
+            "Compute missing procedure / reaction vectors (slow — loads SciBERT + rxnfp)",
+            value=False,
+            key=f"reactions_enrich_vec_{upload_sig}",
+            help=(
+                "Fills procedure_vector (SciBERT) and reaction_vector (rxnfp) when the "
+                "uploaded JSON lacks them, so the combined tier can use those signals. "
+                "Results are cached per upload set."
+            ),
+        )
+
+    config = MatchConfig(
+        tau_provenance=tau_provenance,
+        tau_jaccard=tau_jaccard,
+        tau_combined=tau_combined,
+        w_product_name=w_product_name,
+        w_procedure=w_procedure,
+        w_compound=w_compound,
+        w_reaction=w_reaction,
+        enable_provenance=enable_provenance,
+        enable_combined=enable_combined,
+    )
+    return config, enrich_vectors
+
 
 def render_reactions_section(rows: list[ModelUploads], baseline: str) -> None:
     st.header("Reactions")
     labels = _labels_with_file(rows, "reactions")
-    if baseline not in labels or len(labels) < 2:
-        got = len(labels)
-        st.info(
-            f"Skipped — need baseline + ≥ 1 other reactions upload "
-            f"(baseline present: {baseline in labels}, total uploads: {got})."
-        )
+    if len(labels) < 2:
+        st.info(f"Skipped — need ≥ 2 reactions uploads, got {len(labels)}.")
         return
 
+    patent_id = st.session_state.get("patent_id", "")
+    upload_sig = _reactions_upload_signature(rows, patent_id)
+    match_config, enrich_vectors = _render_reaction_match_controls(upload_sig)
+    editor_signature = _reactions_editor_signature(
+        rows, patent_id, config=match_config, enrich_vectors=enrich_vectors
+    )
+    st.caption(
+        "Uploads are cached on file hashes; changing R1 or any matcher knob rebuilds "
+        "clusters and editable grids (prior Baseline/delete edits for that combo are "
+        "discarded)."
+    )
+
     try:
-        reactions_by_label = {}
-        for label, raw, filename in _payloads_for_kind(rows, "reactions"):
-            reactions_by_label[label] = parse_reactions_json(
-                raw, source_label=f"{label} ({filename})"
-            )
-    except ValueError as error:
+        cache_key = _reaction_enrich_cache_key(rows)
+        payloads = tuple(_payloads_for_kind(rows, "reactions"))
+        reactions_by_label = prepare_reactions_cached(cache_key, payloads)
+
+        if enrich_vectors:
+            try:
+                reactions_by_label = enrich_reaction_vectors_cached(
+                    cache_key, reactions_by_label
+                )
+            except ImportError as vec_error:
+                st.warning(
+                    f"Vector enrichment unavailable ({vec_error}); "
+                    "the combined tier will use only signals present in the uploads."
+                )
+
+        r1_steps_by_label: dict[str, list] = {}
+        r1_labels: set[str] = set()
+        for label, raw, filename in _payloads_for_kind(rows, "r1"):
+            try:
+                r1_steps_by_label[label] = parse_r1_step_dicts(
+                    raw, source_label=f"{label} R1 ({filename})"
+                )
+                r1_labels.add(label)
+            except (ValueError, KeyError) as r1_error:
+                st.warning(f"R1 for {label} skipped: {r1_error}")
+        reactions_by_label = join_reactions_to_r1(reactions_by_label, r1_steps_by_label)
+
+        nway = diff_reactions_nway(
+            reactions_by_label,
+            skip_ensure=True,
+            config=match_config,
+        )
+    except (ValueError, KeyError, ImportError) as error:
         st.error(str(error))
         return
 
-    baseline_reactions = reactions_by_label[baseline]
-    candidates = [label for label in labels if label != baseline]
+    preferred = baseline if baseline in nway.labels else (
+        "Claude" if "Claude" in nway.labels else nway.labels[0]
+    )
+    defaults = compute_reaction_baselines(nway, tiebreak_label="Claude")
+    clusters = reaction_clusters_sorted_by_consensus(nway)
+    model_labels = list(nway.labels)
+
     st.success(
-        f"Reactions comparison — baseline **{baseline}** "
-        f"({len(baseline_reactions)} records) vs {len(candidates)} model(s)."
+        f"Reactions comparison complete — {len(nway.labels)} models, "
+        f"{len(nway.clusters)} reaction clusters "
+        f"(adjudicated baseline: majority + Claude tiebreak)."
     )
+    provenance_state = "on" if match_config.enable_provenance else "off"
+    combined_state = "on" if match_config.enable_combined else "off"
     st.caption(
-        "Pairwise vs baseline (non_synthetic filtered). "
-        "Axes: name, SMILES, reactants, procedure cosine, yield, conditions."
+        "Matching: tiered greedy union, one reaction per model — "
+        f"provenance (R1 lines, τ={match_config.tau_provenance:.2f}, {provenance_state}) → "
+        f"compound-set Jaccard (whole reaction, τ={match_config.tau_jaccard:.2f}) → "
+        f"weighted combined (τ={match_config.tau_combined:.2f}, {combined_state}). "
+        "A cluster's Match tier is the *weakest* tier that merged it. "
+        "Solvents / drying agents / additives / by-products excluded from sets. "
+        "non_synthetic filtered. "
+        "Edit any model column or Baseline; use **Delete selected rows** to sync all three grids."
+    )
+    st.caption(line_join_caption(reactions_by_label, r1_labels=r1_labels))
+    st.caption(enrichment_coverage_caption(reactions_by_label))
+
+    presence_seed = _seed_reaction_editor_df(
+        field="presence",
+        signature=editor_signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+    )
+    presence_for_sidebar = st.session_state.get(
+        _rxn_editor_current_key("presence", editor_signature), presence_seed
+    )
+    _render_reaction_inspector_sidebar(
+        signature=editor_signature,
+        presence_df=presence_for_sidebar,
+        clusters=clusters,
+        preferred=preferred,
     )
 
-    for candidate in candidates:
-        st.subheader(f"{candidate} vs {baseline}")
-        try:
-            report = compare_reactions(
-                baseline_reactions,
-                reactions_by_label[candidate],
-                baseline_label=baseline,
-                candidate_label=candidate,
-            )
-        except Exception as error:
-            st.error(f"{candidate}: {error}")
+    class_options = reaction_field_value_options(reactions_by_label, "reaction_class")
+    product_options = reaction_field_value_options(reactions_by_label, "product")
+
+    edited_presence = _render_reaction_editable_view(
+        title="Presence",
+        field="presence",
+        signature=editor_signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+    )
+
+    edited_class = _render_reaction_editable_view(
+        title="Reaction class",
+        field="reaction_class",
+        signature=editor_signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+        select_options=class_options,
+    )
+
+    edited_product = _render_reaction_editable_view(
+        title="Product",
+        field="product",
+        signature=editor_signature,
+        clusters=clusters,
+        model_labels=model_labels,
+        defaults=defaults,
+        preferred=preferred,
+        select_options=product_options,
+    )
+
+    _render_reaction_delete_controls(editor_signature)
+    edited_presence = st.session_state[_rxn_editor_current_key("presence", editor_signature)]
+    edited_class = st.session_state[_rxn_editor_current_key("reaction_class", editor_signature)]
+    edited_product = st.session_state[_rxn_editor_current_key("product", editor_signature)]
+
+    memberships = build_reaction_upset_memberships(nway)
+    st.subheader("UpSet — reaction overlap")
+    _show_upset(memberships, key="reactions_upset")
+
+    st.subheader("Compare vs manual benchmark")
+    weight_cols = st.columns(3)
+    with weight_cols[0]:
+        w_presence = st.number_input(
+            "Presence F1 weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            key=f"reactions_weight_presence_{editor_signature}",
+        )
+    with weight_cols[1]:
+        w_class = st.number_input(
+            "Reaction-class accuracy weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.25,
+            step=0.05,
+            key=f"reactions_weight_class_{editor_signature}",
+        )
+    with weight_cols[2]:
+        w_product = st.number_input(
+            "Product accuracy weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.50,
+            step=0.05,
+            key=f"reactions_weight_product_{editor_signature}",
+        )
+    weights = {
+        "presence_f1": float(w_presence),
+        "reaction_class_accuracy": float(w_class),
+        "product_accuracy": float(w_product),
+    }
+
+    presence_stats = compute_reaction_presence_stats(edited_presence, model_labels)
+    class_scoped = filter_reaction_by_presence_baseline(edited_class, edited_presence)
+    product_scoped = filter_reaction_by_presence_baseline(edited_product, edited_presence)
+    class_acc = compute_reaction_field_accuracy(class_scoped, model_labels).rename(
+        columns={"accuracy": "reaction_class_accuracy"}
+    )
+    product_acc = compute_reaction_field_accuracy(product_scoped, model_labels).rename(
+        columns={"accuracy": "product_accuracy"}
+    )
+    stats_df = presence_stats.merge(class_acc, on="model", how="outer").merge(
+        product_acc, on="model", how="outer"
+    )
+    stats_df = rank_reaction_models(stats_df, weights=weights)
+
+    display_stats = stats_df.copy()
+    for col in [
+        "composite_score",
+        "presence_precision",
+        "presence_recall",
+        "presence_f1",
+        "reaction_class_accuracy",
+        "product_accuracy",
+    ]:
+        if col not in display_stats.columns:
             continue
+        display_stats[col] = display_stats[col].map(
+            lambda v: "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.1%}"
+        )
+    st.dataframe(display_stats, use_container_width=True, hide_index=True)
 
-        metric_cols = st.columns(5)
-        metric_cols[0].metric("Precision", _format_rate(report.precision))
-        metric_cols[1].metric("Recall", _format_rate(report.recall))
-        metric_cols[2].metric("F1", _format_rate(report.f1))
-        metric_cols[3].metric("TP", report.true_positives)
-        metric_cols[4].metric("FP / FN", f"{report.false_positives} / {report.false_negatives}")
+    chart_df = stats_df.melt(
+        id_vars=["model"],
+        value_vars=["presence_f1", "reaction_class_accuracy", "product_accuracy"],
+        var_name="metric",
+        value_name="score",
+    )
+    chart_df = chart_df.dropna(subset=["score"])
+    if not chart_df.empty:
+        bar_fig = px.bar(
+            chart_df,
+            x="model",
+            y="score",
+            color="metric",
+            barmode="group",
+            title="F1 / accuracy vs edited baseline (ranked)",
+            range_y=[0, 1],
+            category_orders={"model": list(stats_df["model"])},
+        )
+        st.plotly_chart(bar_fig, use_container_width=True)
 
-        st.dataframe(
-            reaction_summary_to_dataframe(report),
-            use_container_width=True,
-            hide_index=True,
+    pipeline_ids_by_label: dict[str, str] = {}
+    num_models_state = st.session_state.get("num_models")
+    try:
+        num_models_int = int(num_models_state) if num_models_state is not None else 0
+    except (TypeError, ValueError):
+        num_models_int = 0
+    for index in range(num_models_int):
+        label = st.session_state.get(f"model_label_{index}", "").strip()
+        pipeline_id = st.session_state.get(f"pipeline_id_{index}", "").strip()
+        if label in model_labels and pipeline_id:
+            pipeline_ids_by_label[label] = pipeline_id
+
+    patent_id_for_exports = patent_id.strip() or "reactions"
+    groups_json = json.dumps(
+        build_reaction_groups_json(
+            nway,
+            patent_id=patent_id_for_exports,
+            baseline_label=preferred,
+        ),
+        indent=2,
+        ensure_ascii=False,
+    )
+    download_cols = st.columns(2)
+    with download_cols[0]:
+        try:
+            pdf_bytes = build_reactions_pdf_report(
+                patent_id_for_exports,
+                pipeline_ids_by_label,
+                stats_df,
+                edited_presence,
+                edited_class,
+                edited_product,
+            )
+            st.download_button(
+                "Download PDF report",
+                data=pdf_bytes,
+                file_name=f"{patent_id_for_exports}-reactions-benchmark.pdf",
+                mime="application/pdf",
+                key=f"reactions_pdf_{editor_signature}",
+            )
+        except Exception as error:  # noqa: BLE001
+            st.warning(f"PDF export unavailable: {error}")
+    with download_cols[1]:
+        st.download_button(
+            "Download reaction groups JSON",
+            data=groups_json,
+            file_name=f"{patent_id_for_exports}-reaction-groups.json",
+            mime="application/json",
+            key=f"reactions_groups_json_{editor_signature}",
         )
 
-        matched_df = reaction_matched_pairs_to_dataframe(report)
-        with st.expander(f"Matched pairs ({len(matched_df)})"):
-            if matched_df.empty:
-                st.warning("No content matches above threshold.")
-            else:
-                st.dataframe(matched_df, use_container_width=True, hide_index=True)
+    with st.expander("Pairwise diagnostics (6-axis matcher)", expanded=False):
+        if baseline not in reactions_by_label:
+            st.info(f"Baseline **{baseline}** has no reactions upload for pairwise panels.")
+        else:
+            baseline_reactions = reactions_by_label[baseline]
+            candidates = [label for label in labels if label != baseline]
+            st.caption(
+                "Pairwise vs baseline (non_synthetic filtered). "
+                "Axes: name, SMILES, reactants, procedure cosine, yield, conditions."
+            )
+            for candidate in candidates:
+                st.markdown(f"**{candidate} vs {baseline}**")
+                try:
+                    report = compare_reactions(
+                        baseline_reactions,
+                        reactions_by_label[candidate],
+                        baseline_label=baseline,
+                        candidate_label=candidate,
+                    )
+                except Exception as error:  # noqa: BLE001
+                    st.error(f"{candidate}: {error}")
+                    continue
 
-        fp_df = false_positives_to_dataframe(report)
-        fn_df = false_negatives_to_dataframe(report)
-        fp_col, fn_col = st.columns(2)
-        with fp_col:
-            st.markdown(f"**False positives ({len(fp_df)})** — {candidate} only")
-            if fp_df.empty:
-                st.success("None")
-            else:
-                st.dataframe(fp_df, use_container_width=True, hide_index=True)
-        with fn_col:
-            st.markdown(f"**False negatives ({len(fn_df)})** — {baseline} only")
-            if fn_df.empty:
-                st.success("None")
-            else:
-                st.dataframe(fn_df, use_container_width=True, hide_index=True)
+                metric_cols = st.columns(5)
+                metric_cols[0].metric("Precision", _format_rate(report.precision))
+                metric_cols[1].metric("Recall", _format_rate(report.recall))
+                metric_cols[2].metric("F1", _format_rate(report.f1))
+                metric_cols[3].metric("TP", report.true_positives)
+                metric_cols[4].metric(
+                    "FP / FN", f"{report.false_positives} / {report.false_negatives}"
+                )
+
+                st.dataframe(
+                    reaction_summary_to_dataframe(report),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                matched_df = reaction_matched_pairs_to_dataframe(report)
+                with st.expander(f"Matched pairs ({len(matched_df)})"):
+                    if matched_df.empty:
+                        st.warning("No content matches above threshold.")
+                    else:
+                        st.dataframe(matched_df, use_container_width=True, hide_index=True)
+
+                fp_df = false_positives_to_dataframe(report)
+                fn_df = false_negatives_to_dataframe(report)
+                fp_col, fn_col = st.columns(2)
+                with fp_col:
+                    st.markdown(f"**False positives ({len(fp_df)})** — {candidate} only")
+                    if fp_df.empty:
+                        st.success("None")
+                    else:
+                        st.dataframe(fp_df, use_container_width=True, hide_index=True)
+                with fn_col:
+                    st.markdown(f"**False negatives ({len(fn_df)})** — {baseline} only")
+                    if fn_df.empty:
+                        st.success("None")
+                    else:
+                        st.dataframe(fn_df, use_container_width=True, hide_index=True)
 
 
 def _apply_fetch_results(index: int, results: dict[str, FetchResult]) -> int:

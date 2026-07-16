@@ -141,17 +141,13 @@ def _flatten_r1_payload(data: Any, *, source_label: str) -> list[dict[str, Any]]
     )
 
 
-def parse_r1_json(raw: str | bytes, *, source_label: str = "R1 JSON") -> list[Section]:
-    """Flatten R1 step JSON into Section objects for the existing pre-pass pipeline.
+def parse_r1_step_dicts(
+    raw: str | bytes, *, source_label: str = "R1 JSON"
+) -> list[dict[str, Any]]:
+    """Flatten R1 JSON into step dicts, preserving parent ``section_label``.
 
-    Field mapping:
-        step_index  -> section_index
-        step_label  -> section_label
-        section_type -> section_type  (inherited from parent pre-pass section)
-        start_line / end_line -> unchanged (document-global)
-
-    Returns steps sorted by ``(start_line, end_line, section_index)`` so document
-    order is preserved even when ``step_index`` resets per section.
+    Unlike ``parse_r1_json``→``Section``, this does **not** overwrite
+    ``section_label`` with ``step_label``. Use for reaction↔R1 line joining.
     """
     text = _decode_text(raw)
     if not text:
@@ -175,7 +171,22 @@ def parse_r1_json(raw: str | bytes, *, source_label: str = "R1 JSON") -> list[Se
             f"{source_label} parsed successfully but contains no steps. "
             "Check that the file is a completed reaction-pass-1 output."
         )
+    return steps
 
+
+def parse_r1_json(raw: str | bytes, *, source_label: str = "R1 JSON") -> list[Section]:
+    """Flatten R1 step JSON into Section objects for the existing pre-pass pipeline.
+
+    Field mapping:
+        step_index  -> section_index
+        step_label  -> section_label
+        section_type -> section_type  (inherited from parent pre-pass section)
+        start_line / end_line -> unchanged (document-global)
+
+    Returns steps sorted by ``(start_line, end_line, section_index)`` so document
+    order is preserved even when ``step_index`` resets per section.
+    """
+    steps = parse_r1_step_dicts(raw, source_label=source_label)
     sections = [_section_from_step(step) for step in steps]
     sections.sort(key=lambda s: (s.start_line, s.end_line, s.section_index))
     return sections

@@ -6,7 +6,7 @@ import json
 import unittest
 
 from core.parsing import Section
-from core.r1_parsing import parse_r1_json
+from core.r1_parsing import parse_r1_json, parse_r1_step_dicts
 
 
 def _step(
@@ -91,6 +91,24 @@ class R1ParsingTest(unittest.TestCase):
             parse_r1_json("[]", source_label="empty")
         with self.assertRaises(ValueError):
             parse_r1_json("", source_label="blank")
+
+    def test_parse_r1_step_dicts_keeps_parent_section_label(self) -> None:
+        payload = [
+            {
+                "step_index": 0,
+                "step_label": "Step A",
+                "section_label": "Example 1",
+                "start_line": 10,
+                "end_line": 20,
+            }
+        ]
+        steps = parse_r1_step_dicts(json.dumps(payload), source_label="flat")
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["section_label"], "Example 1")
+        self.assertEqual(steps[0]["step_label"], "Step A")
+        # Section adapter still maps step_label → section_label for pre-pass UI
+        sections = parse_r1_json(json.dumps(payload), source_label="flat")
+        self.assertEqual(sections[0].section_label, "Step A")
 
 
 if __name__ == "__main__":

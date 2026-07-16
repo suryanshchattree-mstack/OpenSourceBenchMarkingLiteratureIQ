@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,15 @@ class ReactionEntry:
     non_synthetic: bool
     section_label: str | None
     step_label: str | None
+    reaction_id: str | None = None
+    canonical_rxn: str | None = None
+    reaction_vector: tuple[float, ...] | None = None
+    step_index: int | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    line_join: str | None = None
+    compound_smiles: frozenset[str] = field(default_factory=frozenset)
+    raw: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _decode_text(raw: str | bytes) -> str:
@@ -44,6 +53,15 @@ def _optional_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -151,6 +169,16 @@ def _entry_from_dict(item: dict[str, Any]) -> ReactionEntry:
         non_synthetic=bool(item.get("non_synthetic", False)),
         section_label=_optional_str(item.get("section_label")),
         step_label=_optional_str(item.get("step_label")),
+        reaction_id=_optional_str(item.get("reaction_id")),
+        canonical_rxn=_optional_str(
+            item.get("canonical_rxn") or item.get("canonical_rxn_smiles")
+        ),
+        reaction_vector=_float_tuple(item.get("reaction_vector")),
+        step_index=_optional_int(item.get("step_index")),
+        start_line=None,
+        end_line=None,
+        line_join=None,
+        raw=dict(item),
     )
 
 
